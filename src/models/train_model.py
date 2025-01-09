@@ -13,6 +13,7 @@ from xgboost import DMatrix, train as xgb_train
 
 from src.features.feature_engineering import add_technical_indicators_inline
 
+print("DEBUG: Optuna imported successfully!")
 
 ###############################################################################
 # 1. Baseline XGBoost
@@ -33,12 +34,21 @@ def train_xgboost(
     val_df = pd.read_csv(val_csv)
 
     # 2. Keep 'timestamp' as a feature.
-    # Only exclude 'target' from features:
-    non_feature_cols = ["target"]
+    # Include 'timestamp' as a feature during training
+    non_feature_cols = ["target"]  # Do NOT drop 'timestamp'
+
     X_train = train_df.drop(columns=non_feature_cols, errors="ignore")
     y_train = train_df["target"]
     X_val = val_df.drop(columns=non_feature_cols, errors="ignore")
     y_val = val_df["target"]
+
+    # Convert 'timestamp' to a numeric representation (e.g., timestamp to epoch time)
+    X_train["timestamp"] = pd.to_datetime(X_train["timestamp"]).astype(int) / 10**9
+    X_val["timestamp"] = pd.to_datetime(X_val["timestamp"]).astype(int) / 10**9
+
+    # Debugging: Check feature sample after conversion
+    print("[DEBUG] Training features sample with 'timestamp':")
+    print(X_train.head())
 
     # Debug: Print target distribution
     print("[XGBoost DEBUG] Training target distribution:")
@@ -93,7 +103,7 @@ def train_xgboost_with_optuna(
     train_csv="data/intermediate/train_fe.csv",
     val_csv="data/intermediate/val_fe.csv",
     model_path="results/models/xgb_optuna_model.json",
-    num_trials=20
+    num_trials=200
 ):
     """
     XGBoost training with Optuna hyperparameter search.
@@ -129,7 +139,6 @@ def train_xgboost_with_optuna(
     dtrain = DMatrix(X_train, label=y_train)
     dval   = DMatrix(X_val, label=y_val)
 
-    import optuna
     def objective(trial):
         params = {
             "objective": "binary:logistic",
@@ -467,13 +476,15 @@ if __name__ == "__main__":
 
     # 1. XGBoost
     if use_optuna_for_xgb:
+        print("DEBUG: Using Optuna for XGBoost training.")  # Add this
         train_xgboost_with_optuna(
             train_csv="data/intermediate/train_fe.csv",
             val_csv="data/intermediate/val_fe.csv",
             model_path="results/models/xgb_optuna_model.json",
-            num_trials=20
+            num_trials=200
         )
     else:
+        print("DEBUG: Using baseline XGBoost training.")  # Add this
         train_xgboost(
             train_csv="data/intermediate/train_fe.csv",
             val_csv="data/intermediate/val_fe.csv",

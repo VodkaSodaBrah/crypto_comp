@@ -15,7 +15,7 @@ def add_technical_indicators(in_csv, out_csv, window=5):
     df["timestamp"] = pd.to_numeric(df["timestamp"], errors="coerce")
 
     numeric_cols = [
-        "timestamp",   # <--- Keep it here
+        "timestamp",  
         "open", "high", "low", "close",
         "volume", "quote_asset_volume",
         "number_of_trades",
@@ -71,9 +71,6 @@ def add_technical_indicators(in_csv, out_csv, window=5):
 
 
 def add_technical_indicators_inline(df, window=5):
-    # Optionally keep 'timestamp' or derive additional columns inside this function too.
-    # If your timestamp is still in df, do something like:
-    # df["timestamp"] = pd.to_numeric(df["timestamp"], errors="coerce")
 
     df["return"] = df["close"].pct_change()
     df["sma_5"] = df["close"].rolling(window=window).mean()
