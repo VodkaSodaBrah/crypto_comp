@@ -7,7 +7,7 @@ import logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger()
 
-def add_technical_indicators(in_csv, out_csv, window=5):
+def add_technical_indicators(in_csv, out_csv, window=5, bb_window=20):
     if os.path.exists(out_csv):
         os.remove(out_csv)
 
@@ -58,7 +58,6 @@ def add_technical_indicators(in_csv, out_csv, window=5):
     df["macd_hist"] = df["macd"] - df["macd_signal"]
 
     # Bollinger Bands
-    bb_window = 20
     df["bb_mid"] = df["close"].rolling(window=bb_window).mean()
     df["bb_std"] = df["close"].rolling(window=bb_window).std()
     df["bb_upper"] = df["bb_mid"] + 2 * df["bb_std"]
@@ -69,9 +68,7 @@ def add_technical_indicators(in_csv, out_csv, window=5):
     df.to_csv(out_csv, index=False)
     logger.info(f"Feature-engineered data saved to: {out_csv}")
 
-
 def add_technical_indicators_inline(df, window=5):
-
     df["return"] = df["close"].pct_change()
     df["sma_5"] = df["close"].rolling(window=window).mean()
     df["volatility_5"] = df["return"].rolling(window=window).std()
@@ -85,16 +82,17 @@ def add_technical_indicators_inline(df, window=5):
     df.dropna(inplace=True)
     return df
 
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Feature engineering script.")
     parser.add_argument("--in_csv", type=str, required=True, help="Input CSV file path.")
     parser.add_argument("--out_csv", type=str, required=True, help="Output CSV file path.")
     parser.add_argument("--window", type=int, default=5, help="Window size for rolling calculations.")
+    parser.add_argument("--bb_window", type=int, default=20, help="Window size for Bollinger Bands.")
     args = parser.parse_args()
 
     add_technical_indicators(
         in_csv=args.in_csv,
         out_csv=args.out_csv,
-        window=args.window
+        window=args.window,
+        bb_window=args.bb_window
     )

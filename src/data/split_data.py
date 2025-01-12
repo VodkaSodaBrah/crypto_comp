@@ -11,7 +11,6 @@ def time_series_split(
 ):
     """
     Splits the dataset into train, validation, and test based on timestamp ranges.
-
     1. Train: <= train_end
     2. Validation: train_end < timestamp <= val_end
     3. Test: > val_end
@@ -21,33 +20,39 @@ def time_series_split(
     if not os.path.exists(os.path.dirname(test_csv)):
         os.makedirs(os.path.dirname(test_csv))
 
-    print(f"Reading source CSV: {source_csv}")
+    print(f"[INFO] Reading source CSV: {source_csv}")
     df = pd.read_csv(source_csv)
 
-    # Convert Unix timestamps to datetime
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s", errors="coerce")
-    print(f"Total rows before split: {len(df)}")
+    print(f"[INFO] Total rows before split: {len(df)}")
 
-    # Sort by timestamp for consistency
     df.sort_values("timestamp", inplace=True)
+    print("[INFO] Data sorted by timestamp.")
 
-    # Split data
     train_df = df[df["timestamp"] <= train_end]
     val_df = df[(df["timestamp"] > train_end) & (df["timestamp"] <= val_end)]
     test_df = df[df["timestamp"] > val_end]
 
-    print(f"Train range: <= {train_end} | Rows: {len(train_df)}")
-    print(f"Val range: > {train_end} and <= {val_end} | Rows: {len(val_df)}")
-    print(f"Test range: > {val_end} | Rows: {len(test_df)}\n")
+    # Print insights about the splits
+    print(f"[INFO] Train range: <= {train_end}")
+    print(f"[INFO] Train set rows: {len(train_df)}")
+    print(f"Sample Train timestamps: {train_df['timestamp'].min()} to {train_df['timestamp'].max()}")
 
-    # Save splits to CSV
+    print(f"[INFO] Validation range: > {train_end} and <= {val_end}")
+    print(f"[INFO] Validation set rows: {len(val_df)}")
+    print(f"Sample Validation timestamps: {val_df['timestamp'].min()} to {val_df['timestamp'].max()}")
+
+    print(f"[INFO] Test range: > {val_end}")
+    print(f"[INFO] Test set rows: {len(test_df)}")
+    print(f"Sample Test timestamps: {test_df['timestamp'].min()} to {test_df['timestamp'].max()}\n")
+
     train_df.to_csv(train_csv, index=False)
     val_df.to_csv(val_csv, index=False)
     test_df.to_csv(test_csv, index=False)
 
-    print(f"Saved train split to: {train_csv}")
-    print(f"Saved val split to:   {val_csv}")
-    print(f"Saved test split to:  {test_csv}")
+    print(f"[INFO] Saved train split to: {train_csv}")
+    print(f"[INFO] Saved val split to:   {val_csv}")
+    print(f"[INFO] Saved test split to:  {test_csv}")
 
 if __name__ == "__main__":
     time_series_split()
