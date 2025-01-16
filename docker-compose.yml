@@ -1,0 +1,23 @@
+
+services:
+  crypto_pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: crypto_pipeline
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./data:/app/data
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 4G
+    networks:
+      - app_network
+
+networks:
+  app_network:
+    driver: overlay

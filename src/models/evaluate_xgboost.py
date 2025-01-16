@@ -3,7 +3,7 @@ import pandas as pd
 import xgboost as xgb
 from sklearn.metrics import f1_score
 
-def evaluate(data_csv, model_path="results/models/xgb_model.json"):
+def evaluate(data_csv, model_path="results/models/xgb_optuna_model.json", train_features=None):
     try:
         # Load test data
         df = pd.read_csv(data_csv)
@@ -17,6 +17,10 @@ def evaluate(data_csv, model_path="results/models/xgb_model.json"):
         # Drop 'timestamp' if present
         if "timestamp" in X_test.columns:
             X_test = X_test.drop(columns=["timestamp"], errors="ignore")
+
+        # Align features with training dataset
+        if train_features:
+            X_test = X_test[list(set(train_features) & set(X_test.columns))].copy()
 
         # Convert all columns to numeric
         X_test = X_test.apply(pd.to_numeric, errors="coerce").fillna(0)
@@ -44,7 +48,8 @@ def evaluate(data_csv, model_path="results/models/xgb_model.json"):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate XGBoost model on test data.")
     parser.add_argument("--data", type=str, required=True, help="Path to the test dataset CSV.")
-    parser.add_argument("--model", type=str, default="results/models/xgb_model.json", help="Path to the saved XGBoost model.")
+    parser.add_argument("--model", type=str, default="results/models/xgb_optuna_model.json", help="Path to the saved XGBoost model.")
+    parser.add_argument("--train_features", type=str, nargs="+", default=None, help="List of training features for alignment.")
     args = parser.parse_args()
 
-    evaluate(args.data, args.model)
+    evaluate(args.data, args.model, args.train_features)
