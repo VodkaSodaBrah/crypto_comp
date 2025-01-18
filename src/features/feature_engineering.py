@@ -1,98 +1,86 @@
+# src/features/feature_engineering.py
+
+import argparse
 import pandas as pd
 import numpy as np
-import os
-import argparse
 import logging
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger()
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-def add_technical_indicators(in_csv, out_csv, window=5, bb_window=20):
-    if os.path.exists(out_csv):
-        os.remove(out_csv)
+def add_rsi(df, window=14, price_col="close"):
+    """
+    Adds RSI (Relative Strength Index) to df: 
+    RSI = 100 - (100 / (1 + (avg_gain / avg_loss))).
+    """
+    if price_col not in df.columns:
+        logger.warning(f"{price_col} not in df; skipping RSI.")
+        return df
 
-    df = pd.read_csv(in_csv)
-    df["timestamp"] = pd.to_numeric(df["timestamp"], errors="coerce")
+    delta = df[price_col].diff()
+    gain = delta.clip(lower=0)
+    loss = -1 * delta.clip(upper=0)
 
-    numeric_cols = [
-        "timestamp",  
-        "open", "high", "low", "close",
-        "volume", "quote_asset_volume",
-        "number_of_trades",
-        "taker_buy_base_volume",
-        "taker_buy_quote_volume"
-    ]
+    roll_gain = gain.rolling(window=window).mean()
+    roll_loss = loss.rolling(window=window).mean()
+    roll_loss = roll_loss.replace(0, 1e-6)  # avoid div by zero
 
-    # Convert numeric columns (incl. timestamp)
-    for col in numeric_cols:
-        df[col] = (
-            df[col]
-            .astype(str)
-            .replace(r"[^0-9.\-]+", "", regex=True)
-        )
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    df.fillna(0, inplace=True)
-
-    print("\n==== DEBUG: dtypes after numeric conversion ====")
-    print(df[numeric_cols].dtypes)
-    print("================================================\n")
-
-    # Technical indicators
-    df["return"] = df["close"].pct_change()
-    df["sma_5"] = df["close"].rolling(window=window).mean()
-    df["volatility_5"] = df["return"].rolling(window=window).std()
-    df["ema_5"] = df["close"].ewm(span=window, adjust=False).mean()
-
-    delta = df["close"].diff()
-    gain = delta.where(delta > 0, 0).rolling(window=window).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
-    rs = gain / loss
+    rs = roll_gain / roll_loss
     df["rsi"] = 100 - (100 / (1 + rs))
-
-    # MACD
-    ema_12 = df["close"].ewm(span=12, adjust=False).mean()
-    ema_26 = df["close"].ewm(span=26, adjust=False).mean()
-    df["macd"] = ema_12 - ema_26
-    df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
-    df["macd_hist"] = df["macd"] - df["macd_signal"]
-
-    # Bollinger Bands
-    df["bb_mid"] = df["close"].rolling(window=bb_window).mean()
-    df["bb_std"] = df["close"].rolling(window=bb_window).std()
-    df["bb_upper"] = df["bb_mid"] + 2 * df["bb_std"]
-    df["bb_lower"] = df["bb_mid"] - 2 * df["bb_std"]
-
-    df.dropna(inplace=True)
-
-    df.to_csv(out_csv, index=False)
-    logger.info(f"Feature-engineered data saved to: {out_csv}")
-
-def add_technical_indicators_inline(df, window=5):
-    df["return"] = df["close"].pct_change()
-    df["sma_5"] = df["close"].rolling(window=window).mean()
-    df["volatility_5"] = df["return"].rolling(window=window).std()
-    df["ema_5"] = df["close"].ewm(span=window, adjust=False).mean()
-
-    delta = df["close"].diff()
-    gain = delta.where(delta > 0, 0).rolling(window=window).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
-    rs = gain / loss
-    df["rsi"] = 100 - (100 / (1 + rs))
-    df.dropna(inplace=True)
+    df["rsi"].fillna(0, inplace=True)
     return df
 
+def add_lag_features(df, price_col="close", num_lags=1):
+    """
+    Adds lagged features for the specified price_col. e.g., close_lag1, close_lag2, ...
+    """
+    for lag in range(1, num_lags+1):
+        df[f"{price_col}_lag{lag}"] = df[price_col].shift(lag)
+    # Fill resulting NaNs with 0
+    df.fillna(0, inplace=True)
+    return df
+
+def add_technical_indicators_inline(df, window=5, bb_window=20, price_col="close"):
+    """
+    Existing code: rolling means, Bollinger Bands, etc. 
+    """
+    if price_col not in df.columns:
+        logger.warning(f"{price_col} not in df; skipping indicators.")
+        return df
+
+    # Rolling mean
+    df[f"{price_col}_rolling_mean"] = df[price_col].rolling(window=window).mean()
+    # Bollinger
+    rolling_mean = df[price_col].rolling(bb_window).mean()
+    rolling_std = df[price_col].rolling(bb_window).std()
+    rolling_std = rolling_std.replace(0, 1e-6)
+    df[f"{price_col}_bb_upper"] = rolling_mean + (rolling_std * 2)
+    df[f"{price_col}_bb_lower"] = rolling_mean - (rolling_std * 2)
+
+    df.fillna(0, inplace=True)
+    return df
+
+def feature_engineer_data(in_csv, out_csv):
+    logger.info(f"Reading data from {in_csv}")
+    df = pd.read_csv(in_csv)
+
+    # Existing indicators
+    df = add_technical_indicators_inline(df, window=5, bb_window=20, price_col="close")
+
+    # RSI
+    df = add_rsi(df, window=14, price_col="close")
+
+    # 1-lag example
+    df = add_lag_features(df, price_col="close", num_lags=1)
+
+    logger.info(f"Saving to {out_csv}")
+    df.to_csv(out_csv, index=False)
+    logger.info("Feature engineering complete.")
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Feature engineering script.")
-    parser.add_argument("--in_csv", type=str, required=True, help="Input CSV file path.")
-    parser.add_argument("--out_csv", type=str, required=True, help="Output CSV file path.")
-    parser.add_argument("--window", type=int, default=5, help="Window size for rolling calculations.")
-    parser.add_argument("--bb_window", type=int, default=20, help="Window size for Bollinger Bands.")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--in_csv", required=True, help="Input CSV file path.")
+    parser.add_argument("--out_csv", required=True, help="Output CSV file path.")
     args = parser.parse_args()
 
-    add_technical_indicators(
-        in_csv=args.in_csv,
-        out_csv=args.out_csv,
-        window=args.window,
-        bb_window=args.bb_window
-    )
+    feature_engineer_data(args.in_csv, args.out_csv)
