@@ -55,7 +55,7 @@ def create_directories():
     """
     Create necessary directories if they don't exist.
     """
-    directories = ["results/models", "results/logs", "results/logs/tensorboard", "results"]
+    directories = ["results/models", "results/logs", "results/logs/tensorboard", "results/predictions"]
     for dir_path in directories:
         os.makedirs(dir_path, exist_ok=True)
         logger.info(f"Directory checked/created: {dir_path}")
@@ -311,7 +311,7 @@ def train_lstm(trial, train_df, val_df, window_size=5, writer=None, fold=1):
 
     # Hyperparameter suggestions
     batch_size = trial.suggest_int("batch_size", 64, 256)
-    hidden_dim = trial.suggest_int("hidden_dim", 128, 512)
+    hidden_dim = trial.suggest_int("hidden_dim", 96, 512)
     num_layers = trial.suggest_int("num_layers", 1, 4)
     dropout = trial.suggest_float("dropout", 0.1, 0.5)
     bidirectional = trial.suggest_categorical("bidirectional", [True, False])
@@ -340,12 +340,8 @@ def train_lstm(trial, train_df, val_df, window_size=5, writer=None, fold=1):
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=3)
 
-    epochs = 50
+    epochs = 2
     best_val_f1 = 0
-
-    # ===== Added TensorBoard Writer for LSTM =====
-    # Initialize per-fold writer if needed
-    # (Alternatively, use the main writer passed as argument)
 
     for epoch in range(epochs):
         model.train()
@@ -398,6 +394,7 @@ def train_lstm(trial, train_df, val_df, window_size=5, writer=None, fold=1):
         current_lrs = scheduler.get_last_lr()
         logger.info(f"Epoch {epoch+1}: Current Learning Rates: {current_lrs}")
 
+    # After training, return the best validation F1 score for the trial
     return best_val_f1
 
 ######################################################################
@@ -476,7 +473,7 @@ def generate_oof_predictions_xgb(combined_df, folds, features, label_col="target
             storage=storage_path,
             load_if_exists=True
         )
-        study.optimize(lambda trial: train_xgb(trial, X_train, y_train, X_val, y_val, writer=writer, fold=fold), n_trials=50, timeout=600)
+        study.optimize(lambda trial: train_xgb(trial, X_train, y_train, X_val, y_val, writer=writer, fold=fold), n_trials=2, timeout=600)
         
         logger.info(f"Best parameters for Fold {fold}: {study.best_params}")
         logger.info(f"Best F1 for Fold {fold}: {study.best_value:.4f}")  
@@ -520,7 +517,7 @@ def generate_oof_predictions_lstm(combined_df, folds, features, window_size=5, l
     """
     Generate out-of-fold (OOF) predictions for LSTM.
     """
-    oof_preds = np.zeros(len(combined_df))
+    oof_preds = np.zeros(len(combined_df))  # Initialize OOF predictions array
     
     for fold, (train_idx, val_idx) in enumerate(folds, 1):  
         logger.info(f"Training LSTM Fold {fold}/{len(folds)}")
@@ -543,7 +540,7 @@ def generate_oof_predictions_lstm(combined_df, folds, features, window_size=5, l
         # Optimize hyperparameters with Optuna by passing the trial to train_lstm
         study.optimize(
             lambda trial: train_lstm(trial, train_fold, val_fold, window_size=window_size, writer=writer, fold=fold),
-            n_trials=50,
+            n_trials=2,  # Set to 1 for testing; revert to 50 for full training
             timeout=1800  # Adjust timeout as needed
         )
         
@@ -592,7 +589,7 @@ def generate_oof_predictions_lstm(combined_df, folds, features, window_size=5, l
         criterion = WeightedCrossEntropyLoss(class_weights=class_weights)
         
         # Training loop
-        epochs = 50
+        epochs = 2  # Set to 1 for testing; revert to 50 for full training
         best_val_f1 = 0
         device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
         
@@ -624,6 +621,16 @@ def generate_oof_predictions_lstm(combined_df, folds, features, window_size=5, l
             val_f1 = f1_score(all_labels, all_preds, average="macro")
             scheduler.step(val_f1)
     
+            # Report intermediate objective value to Optuna
+            trial.report(val_f1, epoch)
+    
+            # Handle pruning based on the intermediate value
+            if trial.should_prune():
+                logger.info(f"Trial {trial.number} pruned at epoch {epoch + 1}")
+                if writer:
+                    writer.add_scalar(f"Fold_{fold}/LSTM_Prune", epoch + 1, trial.number)
+                raise optuna.exceptions.TrialPruned()
+    
             if val_f1 > best_val_f1:
                 best_val_f1 = val_f1
     
@@ -637,7 +644,7 @@ def generate_oof_predictions_lstm(combined_df, folds, features, window_size=5, l
             current_lrs = scheduler.get_last_lr()
             logger.info(f"Epoch {epoch+1}: Current Learning Rates: {current_lrs}")
         
-        # Generate binary predictions
+        # Generate binary predictions with the best model
         lstm_model.eval()
         all_preds = []
         with torch.no_grad():
@@ -648,8 +655,17 @@ def generate_oof_predictions_lstm(combined_df, folds, features, window_size=5, l
                     preds = torch.argmax(outputs, dim=1)
                 all_preds.extend(preds.cpu().numpy())
         
-        oof_preds[val_idx] = all_preds
-    
+        # Adjust indices to account for window_size
+        adjusted_val_idx = val_idx[window_size:]
+        
+        # ===== Add Assertion Here =====
+        assert len(all_preds) == len(adjusted_val_idx), (
+            f"Fold {fold}: Mismatch between predictions ({len(all_preds)}) and adjusted validation indices ({len(adjusted_val_idx)})."
+        )
+        
+        # Assign predictions to the corresponding indices
+        oof_preds[adjusted_val_idx] = all_preds  # Assign predictions to the corresponding indices
+        
         # Cleanup
         del lstm_model
         if device.type == "cuda":
@@ -664,7 +680,7 @@ def generate_oof_predictions_lstm(combined_df, folds, features, window_size=5, l
 # Stacking Model Training
 ######################################################################
 
-def train_stacking_model_cv(oof_xgb, oof_lstm, y, model_type="rf", n_jobs=2, n_splits=5, writer=None):
+def train_stacking_model_cv(oof_xgb, oof_lstm, y, model_type="rf", n_jobs=2, n_splits=2, writer=None):
     """
     Train a stacking meta-learner using cross-validated OOF predictions.
     """
@@ -890,7 +906,7 @@ def main():
     logger.info(f"Selected Features: {selected_features}")
 
     # Initialize TimeSeriesSplit and convert folds to a list
-    tscv = TimeSeriesSplit(n_splits=5)
+    tscv = TimeSeriesSplit(n_splits=2)
     folds = list(tscv.split(train_df))
 
     # Train XGBoost with Optuna
@@ -914,7 +930,7 @@ def main():
         y=y_combined,
         model_type="rf",
         n_jobs=2,
-        n_splits=5,
+        n_splits=2,
         writer=writer
     )
     logger.info("Stacking meta-learner training completed.")
