@@ -24,6 +24,9 @@ import psutil
 import matplotlib.pyplot as plt
 from sklearn.feature_selection import SelectKBest, f_classif
 
+# ===== Added TensorBoard Import =====
+from torch.utils.tensorboard import SummaryWriter
+
 # Configure Logging
 logging.basicConfig(
     level=logging.INFO,
@@ -52,7 +55,7 @@ def create_directories():
     """
     Create necessary directories if they don't exist.
     """
-    directories = ["results/models", "results/logs", "results"]
+    directories = ["results/models", "results/logs", "results/logs/tensorboard", "results"]
     for dir_path in directories:
         os.makedirs(dir_path, exist_ok=True)
         logger.info(f"Directory checked/created: {dir_path}")
@@ -243,7 +246,7 @@ class LSTMAttnClassifier(nn.Module):
 # Training Functions
 ######################################################################
 
-def train_xgb(trial, X_train, y_train, X_val, y_val):
+def train_xgb(trial, X_train, y_train, X_val, y_val, writer=None, fold=1):
     """
     Train an XGBoost model with hyperparameter optimization using Optuna.
     """
@@ -287,9 +290,16 @@ def train_xgb(trial, X_train, y_train, X_val, y_val):
 
     preds = model.predict(X_val)
     f1 = f1_score(y_val, preds, average="macro")  # Compute Macro-Averaged F1
+
+    # ===== Added TensorBoard Logging for XGBoost =====
+    if writer:
+        writer.add_scalar(f"Fold_{fold}/XGBoost_F1", f1, trial.number)
+        for param_name, param_value in trial.params.items():
+            writer.add_scalar(f"Fold_{fold}/Hyperparameters/{param_name}", param_value, trial.number)
+
     return f1
 
-def train_lstm(trial, train_df, val_df, window_size=5):
+def train_lstm(trial, train_df, val_df, window_size=5, writer=None, fold=1):
     """
     Train an LSTM model with hyperparameter optimization using Optuna.
     """
@@ -299,20 +309,24 @@ def train_lstm(trial, train_df, val_df, window_size=5):
     train_dataset = CryptoSlidingWindowDataset(train_df, window_size=window_size)
     val_dataset = CryptoSlidingWindowDataset(val_df, window_size=window_size)
 
+    # Hyperparameter suggestions
     batch_size = trial.suggest_int("batch_size", 64, 256)
+    hidden_dim = trial.suggest_int("hidden_dim", 128, 512)
+    num_layers = trial.suggest_int("num_layers", 1, 4)
+    dropout = trial.suggest_float("dropout", 0.1, 0.5)
+    bidirectional = trial.suggest_categorical("bidirectional", [True, False])
+    learning_rate = trial.suggest_float("learning_rate", 1e-4, 1e-2)
+
+    # DataLoaders
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
 
     input_dim = train_dataset[0][0].shape[1]
     num_classes = len(np.unique(train_df["target"]))
 
+    # Model, Loss, Optimizer, Scheduler
     class_weights = calculate_class_weights(train_df["target"].values).to(device)
     criterion = WeightedCrossEntropyLoss(class_weights=class_weights)
-
-    hidden_dim = trial.suggest_int("hidden_dim", 128, 512)
-    num_layers = trial.suggest_int("num_layers", 1, 4)
-    dropout = trial.suggest_float("dropout", 0.1, 0.5)
-    bidirectional = trial.suggest_categorical("bidirectional", [True, False])
 
     model = LSTMAttnClassifier(
         input_dim=input_dim,
@@ -323,12 +337,15 @@ def train_lstm(trial, train_df, val_df, window_size=5):
         bidirectional=bidirectional,
     ).to(device)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=trial.suggest_float("learning_rate", 1e-4, 1e-2))
-
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=3)
 
     epochs = 50
     best_val_f1 = 0
+
+    # ===== Added TensorBoard Writer for LSTM =====
+    # Initialize per-fold writer if needed
+    # (Alternatively, use the main writer passed as argument)
 
     for epoch in range(epochs):
         model.train()
@@ -343,7 +360,6 @@ def train_lstm(trial, train_df, val_df, window_size=5):
             optimizer.step()
             train_loss += loss.item()
 
-        val_loss = 0
         model.eval()
         all_preds, all_labels = [], []
         with torch.no_grad():
@@ -352,7 +368,6 @@ def train_lstm(trial, train_df, val_df, window_size=5):
                 with autocast(device_type=device.type, enabled=(device.type == "mps")):
                     outputs = model(X_batch)
                     loss = criterion(outputs, y_batch)
-                val_loss += loss.item()
                 preds = torch.argmax(outputs, dim=1)
                 all_preds.extend(preds.cpu().numpy())
                 all_labels.extend(y_batch.cpu().numpy())
@@ -360,18 +375,26 @@ def train_lstm(trial, train_df, val_df, window_size=5):
         val_f1 = f1_score(all_labels, all_preds, average="macro")
         scheduler.step(val_f1)
 
-        # Report intermediate objective value
+        # Report intermediate objective value to Optuna
         trial.report(val_f1, epoch)
 
         # Handle pruning based on the intermediate value
         if trial.should_prune():
-            logger.info(f"Trial {trial.number} pruned at epoch {epoch+1}")
+            logger.info(f"Trial {trial.number} pruned at epoch {epoch + 1}")
+            if writer:
+                writer.add_scalar(f"Fold_{fold}/LSTM_Prune", epoch + 1, trial.number)
             raise optuna.exceptions.TrialPruned()
 
         if val_f1 > best_val_f1:
             best_val_f1 = val_f1
 
-        # **Manual Logging of Learning Rates**
+        # ===== Added TensorBoard Logging for LSTM =====
+        if writer:
+            writer.add_scalar(f"Fold_{fold}/LSTM_Train_Loss", train_loss, epoch)
+            writer.add_scalar(f"Fold_{fold}/LSTM_Val_F1", val_f1, epoch)
+            writer.add_scalar(f"Fold_{fold}/LSTM_Learning_Rate", optimizer.param_groups[0]['lr'], epoch)
+
+        # Manual Logging of Learning Rates
         current_lrs = scheduler.get_last_lr()
         logger.info(f"Epoch {epoch+1}: Current Learning Rates: {current_lrs}")
 
@@ -425,7 +448,7 @@ def plot_meta_feature_importance(meta_model, feature_names):
 # OOF Predictions for XGBoost
 ######################################################################
 
-def generate_oof_predictions_xgb(combined_df, folds, features, label_col="target"):
+def generate_oof_predictions_xgb(combined_df, folds, features, label_col="target", writer=None):
     """
     Generate out-of-fold (OOF) predictions for XGBoost.
     """
@@ -453,7 +476,7 @@ def generate_oof_predictions_xgb(combined_df, folds, features, label_col="target
             storage=storage_path,
             load_if_exists=True
         )
-        study.optimize(lambda trial: train_xgb(trial, X_train, y_train, X_val, y_val), n_trials=50, timeout=600)
+        study.optimize(lambda trial: train_xgb(trial, X_train, y_train, X_val, y_val, writer=writer, fold=fold), n_trials=50, timeout=600)
         
         logger.info(f"Best parameters for Fold {fold}: {study.best_params}")
         logger.info(f"Best F1 for Fold {fold}: {study.best_value:.4f}")  
@@ -493,7 +516,7 @@ def generate_oof_predictions_xgb(combined_df, folds, features, label_col="target
 # OOF Predictions for LSTM
 ######################################################################
 
-def generate_oof_predictions_lstm(combined_df, folds, features, window_size=5, label_col="target"):
+def generate_oof_predictions_lstm(combined_df, folds, features, window_size=5, label_col="target", writer=None):
     """
     Generate out-of-fold (OOF) predictions for LSTM.
     """
@@ -519,9 +542,9 @@ def generate_oof_predictions_lstm(combined_df, folds, features, window_size=5, l
         
         # Optimize hyperparameters with Optuna by passing the trial to train_lstm
         study.optimize(
-            lambda trial: train_lstm(trial, train_fold, val_fold, window_size=window_size),
+            lambda trial: train_lstm(trial, train_fold, val_fold, window_size=window_size, writer=writer, fold=fold),
             n_trials=50,
-            timeout=1800  
+            timeout=1800  # Adjust timeout as needed
         )
         
         logger.info(f"Best parameters for Fold {fold}: {study.best_params}")
@@ -604,6 +627,12 @@ def generate_oof_predictions_lstm(combined_df, folds, features, window_size=5, l
             if val_f1 > best_val_f1:
                 best_val_f1 = val_f1
     
+            # ===== Added TensorBoard Logging for LSTM =====
+            if writer:
+                writer.add_scalar(f"Fold_{fold}/LSTM_Train_Loss", train_loss, epoch)
+                writer.add_scalar(f"Fold_{fold}/LSTM_Val_F1", val_f1, epoch)
+                writer.add_scalar(f"Fold_{fold}/LSTM_Learning_Rate", optimizer.param_groups[0]['lr'], epoch)
+    
             # Manual Logging of Learning Rates
             current_lrs = scheduler.get_last_lr()
             logger.info(f"Epoch {epoch+1}: Current Learning Rates: {current_lrs}")
@@ -635,7 +664,7 @@ def generate_oof_predictions_lstm(combined_df, folds, features, window_size=5, l
 # Stacking Model Training
 ######################################################################
 
-def train_stacking_model_cv(oof_xgb, oof_lstm, y, model_type="rf", n_jobs=2, n_splits=5):
+def train_stacking_model_cv(oof_xgb, oof_lstm, y, model_type="rf", n_jobs=2, n_splits=5, writer=None):
     """
     Train a stacking meta-learner using cross-validated OOF predictions.
     """
@@ -674,23 +703,42 @@ def train_stacking_model_cv(oof_xgb, oof_lstm, y, model_type="rf", n_jobs=2, n_s
                 verbose=False,
             )
             preds = meta_model.predict(X_val_fold)
+            
+            # ===== Optional TensorBoard Logging for Meta-Model =====
+            if writer:
+                writer.add_scalar(f"Meta-Model/Fold_{fold}/XGBoost_F1", f1_score(y_val_fold, preds, average="macro"), fold)
+        
         elif model_type.lower() == "lr":
             meta_model = LogisticRegression(max_iter=1000, class_weight='balanced', n_jobs=n_jobs)
             meta_model.fit(X_train_fold, y_train_fold)
             preds = meta_model.predict(X_val_fold)
+            
+            if writer:
+                writer.add_scalar(f"Meta-Model/Fold_{fold}/LR_F1", f1_score(y_val_fold, preds, average="macro"), fold)
+        
         elif model_type.lower() == "rf":
             meta_model = RandomForestClassifier(n_estimators=100, class_weight='balanced', n_jobs=n_jobs)
             meta_model.fit(X_train_fold, y_train_fold)
             preds = meta_model.predict(X_val_fold)
+            
+            if writer:
+                writer.add_scalar(f"Meta-Model/Fold_{fold}/RF_F1", f1_score(y_val_fold, preds, average="macro"), fold)
+        
         else:
             raise ValueError("Unsupported meta-model type. Choose 'xgb', 'lr', or 'rf'.")
         
         meta_preds[val_idx] = preds
         
+        # Optionally, save each fold's meta-model
         # joblib.dump(meta_model, f"results/models/meta_model_fold{fold}.pkl")
     
     # Evaluate overall meta-model performance
     evaluate_and_print_metrics(y_meta, meta_preds, prefix="Meta-learner")
+    
+    # ===== Optional TensorBoard Logging for Meta-Model =====
+    if writer:
+        overall_f1 = f1_score(y_meta, meta_preds, average="macro")
+        writer.add_scalar("Meta-Model/Overall_F1", overall_f1, 0)
     
     # Train final meta-model on the entire dataset
     if model_type.lower() == "xgb":
@@ -711,14 +759,31 @@ def train_stacking_model_cv(oof_xgb, oof_lstm, y, model_type="rf", n_jobs=2, n_s
         )
         final_meta_model.fit(X_meta, y_meta, verbose=False)
         joblib.dump(final_meta_model, "results/models/stacking_meta_model_final_xgb.pkl")
+        
+        if writer:
+            preds = final_meta_model.predict(X_meta)
+            overall_f1_final = f1_score(y_meta, preds, average="macro")
+            writer.add_scalar("Meta-Model/Final_XGB_F1", overall_f1_final, 0)
+        
     elif model_type.lower() == "lr":
         final_meta_model = LogisticRegression(max_iter=1000, class_weight='balanced', n_jobs=n_jobs)
         final_meta_model.fit(X_meta, y_meta)
         joblib.dump(final_meta_model, "results/models/stacking_meta_model_final_lr.pkl")
+        
+        if writer:
+            preds = final_meta_model.predict(X_meta)
+            overall_f1_final = f1_score(y_meta, preds, average="macro")
+            writer.add_scalar("Meta-Model/Final_LR_F1", overall_f1_final, 0)
+        
     elif model_type.lower() == "rf":
         final_meta_model = RandomForestClassifier(n_estimators=200, class_weight='balanced', n_jobs=n_jobs)
         final_meta_model.fit(X_meta, y_meta)
         joblib.dump(final_meta_model, "results/models/stacking_meta_model_final_rf.pkl")
+        
+        if writer:
+            preds = final_meta_model.predict(X_meta)
+            overall_f1_final = f1_score(y_meta, preds, average="macro")
+            writer.add_scalar("Meta-Model/Final_RF_F1", overall_f1_final, 0)
     
     return final_meta_model
 
@@ -768,6 +833,7 @@ def main():
     # Confirm the updated script is running
     print("Running the updated train_model.py script.")
     
+    # Ensure multiprocessing uses 'spawn' method for macOS and Windows compatibility
     if sys.platform.startswith("darwin") or sys.platform.startswith("win"):
         import multiprocessing as mp
         try:
@@ -777,6 +843,10 @@ def main():
 
     # Create necessary directories
     create_directories()
+
+    # ===== Initialize TensorBoard SummaryWriter =====
+    writer = SummaryWriter(log_dir="results/logs/tensorboard")
+    logger.info("Initialized TensorBoard SummaryWriter.")
 
     # Start cProfile
     profiler = cProfile.Profile()
@@ -825,12 +895,12 @@ def main():
 
     # Train XGBoost with Optuna
     logger.info("Training XGBoost with Optuna...")
-    oof_xgb = generate_oof_predictions_xgb(train_df, folds, selected_features, label_col="target")
+    oof_xgb = generate_oof_predictions_xgb(train_df, folds, selected_features, label_col="target", writer=writer)
     logger.info("XGBoost OOF predictions completed.")
 
     # Train LSTM with Optuna
     logger.info("Training LSTM with Optuna...")
-    oof_lstm = generate_oof_predictions_lstm(train_df, folds, selected_features, window_size=5, label_col="target")
+    oof_lstm = generate_oof_predictions_lstm(train_df, folds, selected_features, window_size=5, label_col="target", writer=writer)
     logger.info("LSTM OOF predictions completed.")
 
     log_memory_usage("After Generating OOF Predictions")
@@ -844,7 +914,8 @@ def main():
         y=y_combined,
         model_type="rf",
         n_jobs=2,
-        n_splits=5
+        n_splits=5,
+        writer=writer
     )
     logger.info("Stacking meta-learner training completed.")
 
@@ -856,6 +927,10 @@ def main():
     logger.info(
         "All done! XGB+LSTM trained with weighted loss functions and Optuna hyperparameter tuning."
     )
+
+    # ===== Close TensorBoard SummaryWriter =====
+    writer.close()
+    logger.info("Closed TensorBoard SummaryWriter.")
 
     # Stop profiler
     profiler.disable()
