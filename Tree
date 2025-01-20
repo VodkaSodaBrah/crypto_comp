@@ -1,0 +1,265 @@
+┣ 📂archive
+┃ ┣ 📜optuna_lstm_study_new.db
+┃ ┗ 📜optuna_study.db
+┣ 📂backup-kaggle_crypto.git
+┃ ┣ 📂hooks
+┃ ┃ ┣ 📜applypatch-msg.sample
+┃ ┃ ┣ 📜commit-msg.sample
+┃ ┃ ┣ 📜fsmonitor-watchman.sample
+┃ ┃ ┣ 📜post-update.sample
+┃ ┃ ┣ 📜pre-applypatch.sample
+┃ ┃ ┣ 📜pre-commit.sample
+┃ ┃ ┣ 📜pre-merge-commit.sample
+┃ ┃ ┣ 📜pre-push.sample
+┃ ┃ ┣ 📜pre-rebase.sample
+┃ ┃ ┣ 📜pre-receive.sample
+┃ ┃ ┣ 📜prepare-commit-msg.sample
+┃ ┃ ┣ 📜push-to-checkout.sample
+┃ ┃ ┣ 📜sendemail-validate.sample
+┃ ┃ ┗ 📜update.sample
+┃ ┣ 📂info
+┃ ┃ ┗ 📜exclude
+┃ ┣ 📂objects
+┃ ┃ ┣ 📂info
+┃ ┃ ┗ 📂pack
+┃ ┣ 📂refs
+┃ ┃ ┣ 📂heads
+┃ ┃ ┗ 📂tags
+┃ ┣ 📜config
+┃ ┣ 📜description
+┃ ┗ 📜HEAD
+┣ 📂data
+┃ ┣ 📂final
+┃ ┃ ┣ 📜test_fe_backup.csv
+┃ ┃ ┣ 📜test_fe.csv
+┃ ┃ ┣ 📜test_preprocessed.csv
+┃ ┃ ┗ 📜test.csv
+┃ ┣ 📂intermediate
+┃ ┃ ┣ 📜train_fe_backup.csv
+┃ ┃ ┣ 📜train_fe.csv
+┃ ┃ ┣ 📜train_features.csv
+┃ ┃ ┣ 📜train_features.txt
+┃ ┃ ┣ 📜train_preprocessed.csv
+┃ ┃ ┣ 📜train.csv
+┃ ┃ ┣ 📜val_fe_backup.csv
+┃ ┃ ┣ 📜val_fe.csv
+┃ ┃ ┣ 📜val_preprocessed.csv
+┃ ┃ ┗ 📜val.csv
+┃ ┗ 📂raw
+┃   ┣ 📜sample_submission.csv
+┃   ┣ 📜test.csv
+┃   ┗ 📜train.csv
+┣ 📂directional-forecasting-in-cryptocurrencies
+┣ 📂logs
+┃ ┣ 📜feature_engineering.log
+┃ ┣ 📜generate_submission.log
+┃ ┗ 📜preprocess.log
+┣ 📂notebooks
+┃ ┣ 📜00_data_exploration.ipynb
+┃ ┣ 📜01_feature_engineering.ipynb
+┃ ┗ 📜02_model_prototyping.ipynb
+┣ 📂results
+┃ ┣ 📂figures
+┃ ┣ 📂logs
+┃ ┃ ┣ 📂tensorboard
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737354590.Michaels-MacBook-Pro.local.71087.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737388232.Michaels-MacBook-Pro.local.77822.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737390673.Michaels-MacBook-Pro.local.33043.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737393974.Michaels-MacBook-Pro.local.11219.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737394127.Michaels-MacBook-Pro.local.14908.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737396516.Michaels-MacBook-Pro.local.70569.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737397324.Michaels-MacBook-Pro.local.90233.0
+┃ ┃ ┃ ┗ 📜events.out.tfevents.1737399477.Michaels-MacBook-Pro.local.41295.0
+┃ ┃ ┣ 📂tensorboard_submission
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737401750.Michaels-MacBook-Pro.local.94969.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737402171.Michaels-MacBook-Pro.local.5292.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737402292.Michaels-MacBook-Pro.local.8234.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737402359.Michaels-MacBook-Pro.local.9866.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737402645.Michaels-MacBook-Pro.local.16605.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737403011.Michaels-MacBook-Pro.local.25141.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737403155.Michaels-MacBook-Pro.local.28694.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737403244.Michaels-MacBook-Pro.local.30881.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737403540.Michaels-MacBook-Pro.local.37722.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737403762.Michaels-MacBook-Pro.local.42902.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737403879.Michaels-MacBook-Pro.local.45690.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737403944.Michaels-MacBook-Pro.local.47214.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737404111.Michaels-MacBook-Pro.local.51123.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737404197.Michaels-MacBook-Pro.local.53151.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737404322.Michaels-MacBook-Pro.local.56046.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737404418.Michaels-MacBook-Pro.local.58360.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737404696.Michaels-MacBook-Pro.local.64887.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737404847.Michaels-MacBook-Pro.local.68420.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737404903.Michaels-MacBook-Pro.local.69735.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737405097.Michaels-MacBook-Pro.local.74243.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737405619.Michaels-MacBook-Pro.local.86394.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737405747.Michaels-MacBook-Pro.local.89396.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737405792.Michaels-MacBook-Pro.local.90954.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737405834.Michaels-MacBook-Pro.local.91976.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737406028.Michaels-MacBook-Pro.local.96493.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737406127.Michaels-MacBook-Pro.local.98855.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737406179.Michaels-MacBook-Pro.local.199.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737406443.Michaels-MacBook-Pro.local.6818.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737406533.Michaels-MacBook-Pro.local.9126.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737407012.Michaels-MacBook-Pro.local.20292.0
+┃ ┃ ┃ ┣ 📜events.out.tfevents.1737407267.Michaels-MacBook-Pro.local.26209.0
+┃ ┃ ┃ ┗ 📜events.out.tfevents.1737410013.Michaels-MacBook-Pro.local.89038.0
+┃ ┃ ┗ 📜train_model.log
+┃ ┣ 📂models
+┃ ┃ ┣ 📜ensemble_predictions.csv
+┃ ┃ ┣ 📜lstm_confusion_matrix.png
+┃ ┃ ┣ 📜lstm_model.pth
+┃ ┃ ┣ 📜lstm_multistep_optuna.pth
+┃ ┃ ┣ 📜lstm_multistep.pth
+┃ ┃ ┣ 📜lstm_optuna_final.pth
+┃ ┃ ┣ 📜lstm_precision_recall_curve.png
+┃ ┃ ┣ 📜lstm_roc_curve.png
+┃ ┃ ┣ 📜meta_model_feature_importance.png
+┃ ┃ ┣ 📜optuna_lstm.db
+┃ ┃ ┣ 📜optuna_xgb.db
+┃ ┃ ┣ 📜random_forest_model.pkl
+┃ ┃ ┣ 📜stacking_meta_model_final_rf.pkl
+┃ ┃ ┣ 📜xgb_best_model.json
+┃ ┃ ┣ 📜xgb_confusion_matrix.png
+┃ ┃ ┣ 📜xgb_feature_importance.png
+┃ ┃ ┣ 📜xgb_model.json
+┃ ┃ ┣ 📜xgb_optuna_final.json
+┃ ┃ ┣ 📜xgb_optuna_model.json
+┃ ┃ ┣ 📜xgb_precision_recall_curve.png
+┃ ┃ ┗ 📜xgb_roc_curve.png
+┃ ┣ 📂predictions
+┃ ┣ 📂scalers
+┃ ┃ ┣ 📜lstm_features.pkl
+┃ ┃ ┗ 📜lstm_scaler.pkl
+┃ ┣ 📜combined_submission.csv
+┃ ┣ 📜lstm_submission.csv
+┃ ┣ 📜optuna_lstm.db
+┃ ┣ 📜optuna_xgb.db
+┃ ┣ 📜profile.out
+┃ ┗ 📜xgb_submission.csv
+┣ 📂runs
+┃ ┣ 📂lstm_multistep_optuna_experiment
+┃ ┃ ┣ 📜events.out.tfevents.1736946487.Michaels-MacBook-Pro.local.3765.1
+┃ ┃ ┣ 📜events.out.tfevents.1736947371.Michaels-MacBook-Pro.local.23336.1
+┃ ┃ ┣ 📜events.out.tfevents.1737030162.Michaels-MacBook-Pro.local.77417.1
+┃ ┃ ┣ 📜events.out.tfevents.1737032602.Michaels-MacBook-Pro.local.33124.1
+┃ ┃ ┣ 📜events.out.tfevents.1737035261.Michaels-MacBook-Pro.local.93006.1
+┃ ┃ ┣ 📜events.out.tfevents.1737040864.Michaels-MacBook-Pro.local.7534.1
+┃ ┃ ┣ 📜events.out.tfevents.1737043438.Michaels-MacBook-Pro.local.62623.1
+┃ ┃ ┣ 📜events.out.tfevents.1737048927.Michaels-MacBook-Pro.local.87445.1
+┃ ┃ ┣ 📜events.out.tfevents.1737050800.Michaels-MacBook-Pro.local.31012.1
+┃ ┃ ┣ 📜events.out.tfevents.1737054140.Michaels-MacBook-Pro.local.6405.1
+┃ ┃ ┣ 📜events.out.tfevents.1737055433.Michaels-MacBook-Pro.local.16753.1
+┃ ┃ ┣ 📜events.out.tfevents.1737056399.Michaels-MacBook-Pro.local.40575.1
+┃ ┃ ┣ 📜events.out.tfevents.1737062839.Michaels-MacBook-Pro.local.89939.1
+┃ ┃ ┣ 📜events.out.tfevents.1737063667.Michaels-MacBook-Pro.local.8560.1
+┃ ┃ ┣ 📜events.out.tfevents.1737064644.Michaels-MacBook-Pro.local.48951.1
+┃ ┃ ┣ 📜events.out.tfevents.1737065051.Michaels-MacBook-Pro.local.58239.1
+┃ ┃ ┣ 📜events.out.tfevents.1737120164.Michaels-MacBook-Pro.local.95456.1
+┃ ┃ ┣ 📜events.out.tfevents.1737123494.Michaels-MacBook-Pro.local.70456.1
+┃ ┃ ┣ 📜events.out.tfevents.1737123902.Michaels-MacBook-Pro.local.79762.1
+┃ ┃ ┣ 📜events.out.tfevents.1737125573.Michaels-MacBook-Pro.local.17320.1
+┃ ┃ ┣ 📜events.out.tfevents.1737130422.Michaels-MacBook-Pro.local.25445.1
+┃ ┃ ┣ 📜events.out.tfevents.1737130522.Michaels-MacBook-Pro.local.27827.1
+┃ ┃ ┣ 📜events.out.tfevents.1737130786.Michaels-MacBook-Pro.local.33841.1
+┃ ┃ ┣ 📜events.out.tfevents.1737134925.Michaels-MacBook-Pro.local.10550.1
+┃ ┃ ┣ 📜events.out.tfevents.1737141783.Michaels-MacBook-Pro.local.63797.1
+┃ ┃ ┣ 📜events.out.tfevents.1737148474.Michaels-MacBook-Pro.local.18692.1
+┃ ┃ ┣ 📜events.out.tfevents.1737161538.Michaels-MacBook-Pro.local.36019.1
+┃ ┃ ┣ 📜events.out.tfevents.1737162606.Michaels-MacBook-Pro.local.61786.1
+┃ ┃ ┣ 📜events.out.tfevents.1737164580.Michaels-MacBook-Pro.local.8498.1
+┃ ┃ ┣ 📜events.out.tfevents.1737167366.Michaels-MacBook-Pro.local.73840.1
+┃ ┃ ┣ 📜events.out.tfevents.1737168348.Michaels-MacBook-Pro.local.96314.1
+┃ ┃ ┣ 📜events.out.tfevents.1737176964.Michaels-MacBook-Pro.local.98929.1
+┃ ┃ ┣ 📜events.out.tfevents.1737178248.Michaels-MacBook-Pro.local.40093.1
+┃ ┃ ┣ 📜events.out.tfevents.1737180031.Michaels-MacBook-Pro.local.80365.1
+┃ ┃ ┣ 📜events.out.tfevents.1737182337.Michaels-MacBook-Pro.local.32577.1
+┃ ┃ ┣ 📜events.out.tfevents.1737209822.Michaels-MacBook-Pro.local.35997.1
+┃ ┃ ┣ 📜events.out.tfevents.1737209878.Michaels-MacBook-Pro.local.36929.1
+┃ ┃ ┗ 📜events.out.tfevents.1737210746.Michaels-MacBook-Pro.local.50480.1
+┃ ┗ 📂xgboost_optuna_experiment
+┃   ┣ 📜events.out.tfevents.1736946377.Michaels-MacBook-Pro.local.3765.0
+┃   ┣ 📜events.out.tfevents.1736947248.Michaels-MacBook-Pro.local.23336.0
+┃   ┣ 📜events.out.tfevents.1737030155.Michaels-MacBook-Pro.local.77417.0
+┃   ┣ 📜events.out.tfevents.1737032595.Michaels-MacBook-Pro.local.33124.0
+┃   ┣ 📜events.out.tfevents.1737035255.Michaels-MacBook-Pro.local.93006.0
+┃   ┣ 📜events.out.tfevents.1737040858.Michaels-MacBook-Pro.local.7534.0
+┃   ┣ 📜events.out.tfevents.1737043331.Michaels-MacBook-Pro.local.62623.0
+┃   ┣ 📜events.out.tfevents.1737048864.Michaels-MacBook-Pro.local.87445.0
+┃   ┣ 📜events.out.tfevents.1737050791.Michaels-MacBook-Pro.local.31012.0
+┃   ┣ 📜events.out.tfevents.1737054130.Michaels-MacBook-Pro.local.6405.0
+┃   ┣ 📜events.out.tfevents.1737054586.Michaels-MacBook-Pro.local.16753.0
+┃   ┣ 📜events.out.tfevents.1737055461.Michaels-MacBook-Pro.local.37095.0
+┃   ┣ 📜events.out.tfevents.1737055617.Michaels-MacBook-Pro.local.40575.0
+┃   ┣ 📜events.out.tfevents.1737062155.Michaels-MacBook-Pro.local.89939.0
+┃   ┣ 📜events.out.tfevents.1737062943.Michaels-MacBook-Pro.local.8560.0
+┃   ┣ 📜events.out.tfevents.1737064551.Michaels-MacBook-Pro.local.46871.0
+┃   ┣ 📜events.out.tfevents.1737064639.Michaels-MacBook-Pro.local.48951.0
+┃   ┣ 📜events.out.tfevents.1737065039.Michaels-MacBook-Pro.local.58239.0
+┃   ┣ 📜events.out.tfevents.1737120158.Michaels-MacBook-Pro.local.95456.0
+┃   ┣ 📜events.out.tfevents.1737123488.Michaels-MacBook-Pro.local.70456.0
+┃   ┣ 📜events.out.tfevents.1737123897.Michaels-MacBook-Pro.local.79762.0
+┃   ┣ 📜events.out.tfevents.1737125568.Michaels-MacBook-Pro.local.17320.0
+┃   ┣ 📜events.out.tfevents.1737130416.Michaels-MacBook-Pro.local.25445.0
+┃   ┣ 📜events.out.tfevents.1737130517.Michaels-MacBook-Pro.local.27827.0
+┃   ┣ 📜events.out.tfevents.1737130630.Michaels-MacBook-Pro.local.30383.0
+┃   ┣ 📜events.out.tfevents.1737130781.Michaels-MacBook-Pro.local.33841.0
+┃   ┣ 📜events.out.tfevents.1737134198.Michaels-MacBook-Pro.local.10550.0
+┃   ┣ 📜events.out.tfevents.1737141020.Michaels-MacBook-Pro.local.63797.0
+┃   ┣ 📜events.out.tfevents.1737147729.Michaels-MacBook-Pro.local.18692.0
+┃   ┣ 📜events.out.tfevents.1737155716.Michaels-MacBook-Pro.local.7713.0
+┃   ┣ 📜events.out.tfevents.1737160458.Michaels-MacBook-Pro.local.19817.0
+┃   ┣ 📜events.out.tfevents.1737160531.Michaels-MacBook-Pro.local.21629.0
+┃   ┣ 📜events.out.tfevents.1737161149.Michaels-MacBook-Pro.local.36019.0
+┃   ┣ 📜events.out.tfevents.1737162218.Michaels-MacBook-Pro.local.61786.0
+┃   ┣ 📜events.out.tfevents.1737164178.Michaels-MacBook-Pro.local.8498.0
+┃   ┣ 📜events.out.tfevents.1737166950.Michaels-MacBook-Pro.local.73840.0
+┃   ┣ 📜events.out.tfevents.1737167914.Michaels-MacBook-Pro.local.96314.0
+┃   ┣ 📜events.out.tfevents.1737176506.Michaels-MacBook-Pro.local.98929.0
+┃   ┣ 📜events.out.tfevents.1737178241.Michaels-MacBook-Pro.local.40093.0
+┃   ┣ 📜events.out.tfevents.1737180025.Michaels-MacBook-Pro.local.80365.0
+┃   ┣ 📜events.out.tfevents.1737182331.Michaels-MacBook-Pro.local.32577.0
+┃   ┣ 📜events.out.tfevents.1737209816.Michaels-MacBook-Pro.local.35997.0
+┃   ┣ 📜events.out.tfevents.1737209872.Michaels-MacBook-Pro.local.36929.0
+┃   ┣ 📜events.out.tfevents.1737210740.Michaels-MacBook-Pro.local.50480.0
+┃   ┗ 📜events.out.tfevents.1737211864.Michaels-MacBook-Pro.local.67832.0
+┣ 📂scripts
+┃ ┗ 📜run_all.sh
+┣ 📂src
+┃ ┣ 📂data
+┃ ┃ ┣ 📜preprocess.py
+┃ ┃ ┗ 📜split_data.py
+┃ ┣ 📂features
+┃ ┃ ┗ 📜feature_engineering.py
+┃ ┣ 📂huggingface_pipeline
+┃ ┃ ┣ 📜.env
+┃ ┃ ┣ 📜infer.py
+┃ ┃ ┗ 📜train_model_hf.py
+┃ ┣ 📂models
+┃ ┃ ┣ 📜evaluate_lstm.py
+┃ ┃ ┣ 📜evaluate_xgboost.py
+┃ ┃ ┣ 📜generate_submission.py
+┃ ┃ ┗ 📜train_model.py
+┃ ┗ 📂utils
+┃   ┣ 📜check_bias.py
+┃   ┣ 📜check_independence.py
+┃   ┣ 📜create_time_features.py
+┃   ┣ 📜generate_sample_submission.py
+┃   ┣ 📜helpers.py
+┃   ┣ 📜inspect_timestamps.py
+┃   ┗ 📜test_xgboost_fit.py
+┣ 📜.DS_Store
+┣ 📜.gitattributes
+┣ 📜.gitignore
+┣ 📜config.yml
+┣ 📜docker-compose.yml
+┣ 📜Dockerfile
+┣ 📜environment_backup.yml
+┣ 📜environment.yml
+┣ 📜optuna_lstm_study_backup.db
+┣ 📜optuna_lstm_study_new_backup.db
+┣ 📜optuna_lstm_study.db
+┣ 📜optuna_study_backup.db
+┣ 📜optuna_xgb_study_backup.db
+┣ 📜optuna_xgb_study.db
+┣ 📜README.md
+┗ 📜Tree

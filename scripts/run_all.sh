@@ -7,19 +7,24 @@ echo "=============================="
 echo "      Starting the Pipeline   "
 echo "=============================="
 
+# Define config file path
+CONFIG_FILE="config.yml"
+
 # Create necessary directories
+echo "Creating necessary directories..."
 mkdir -p logs
 mkdir -p data/intermediate
 mkdir -p data/final
 mkdir -p results/models
 mkdir -p results/predictions
+mkdir -p results/logs/tensorboard
+mkdir -p results/logs/tensorboard_submission
 
 ##############################
 # 1. Split Data
 ##############################
 echo "Step 1: Splitting data..."
-# Removed the --config flag as split_data.py does not accept it.
-python src/data/split_data.py
+python src/data/split_data.py --config "$CONFIG_FILE"
 
 ########################################
 # 2. Preprocess Data
@@ -29,7 +34,7 @@ echo "Step 2: Preprocessing data..."
 #--- Training Data ---
 echo "Preprocessing Training Data..."
 python src/data/preprocess.py \
-    --in_csv="data/intermediate/train.csv" \
+    --in_csv="data/raw/train.csv" \
     --out_csv="data/intermediate/train_preprocessed.csv" \
     --chunksize=100000 \
     --fillna_method=ffill
@@ -37,7 +42,7 @@ python src/data/preprocess.py \
 #--- Validation Data ---
 echo "Preprocessing Validation Data..."
 python src/data/preprocess.py \
-    --in_csv="data/intermediate/val.csv" \
+    --in_csv="data/raw/val.csv" \
     --out_csv="data/intermediate/val_preprocessed.csv" \
     --chunksize=100000 \
     --fillna_method=ffill
@@ -45,7 +50,7 @@ python src/data/preprocess.py \
 #--- Test Data ---
 echo "Preprocessing Test Data..."
 python src/data/preprocess.py \
-    --in_csv="data/final/test.csv" \
+    --in_csv="data/raw/test.csv" \
     --out_csv="data/final/test_preprocessed.csv" \
     --chunksize=100000 \
     --fillna_method=ffill
@@ -83,33 +88,31 @@ python src/features/feature_engineering.py \
 # 4. Train Models (XGB, LSTM, Stacking)
 ########################################
 echo "Step 4: Training models..."
-# train_model.py now handles XGBoost+Optuna, LSTM+Optuna, and Stacking Meta-Learner
-python src/models/train_model.py \
-    --train_file="data/intermediate/train_fe.csv" \
-    --val_file="data/intermediate/val_fe.csv" \
-    --batch_size=128 \
-    --learning_rate=0.001 \
-    --epochs=100 \
-    --num_trials=100 \
-    --model_type="lstm" \
-    --dropout=0.3 \
-    --use_attention \
-    --ensemble_method="performance" \
-    --optimize_window=false \
-    --device="mps" \
-    --verbose
+python src/models/train_model.py --config "$CONFIG_FILE"
 
 ########################################
-# 5. Generate Submission (Prediction)
+# 5. Generate Submissions (Predictions)
 ########################################
-echo "Step 5: Generating predictions..."
+echo "Step 5: Generating predictions for submission..."
+
+# Generate XGBoost predictions
 python src/models/generate_submission.py \
-    --xgb_model="results/models/xgb_best_model.json" \
-    --lstm_model="results/models/lstm_multistep_optuna.pth" \
-    --output_weighted="results/predictions/submission_weighted.csv" \
-    --output_stacking="results/predictions/submission_stacking.csv"
+    --config "$CONFIG_FILE" \
+    --model_type xgb \
+    --output_path "results/predictions/xgb_submission.csv"
 
-echo "Submission files are ready in results/predictions/"
+# Generate LSTM predictions
+python src/models/generate_submission.py \
+    --config "$CONFIG_FILE" \
+    --model_type lstm \
+    --output_path "results/predictions/lstm_submission.csv"
+
+# Generate Combined predictions
+python src/models/generate_submission.py \
+    --config "$CONFIG_FILE" \
+    --model_type combined \
+    --output_path "results/predictions/combined_submission.csv"
+
 echo "=============================="
-echo "         Pipeline Complete!    "
+echo "         Pipeline Complete!   "
 echo "=============================="
