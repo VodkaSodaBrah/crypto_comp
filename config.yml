@@ -76,6 +76,6 @@ lstm:
 submission:
   id_column: "row_id"  
   target_column: "target"  
-  xgb_output_submission_path: "/Users/mchildress/Code/my_crypto_prediction/results/predictions/xgb_submission.csv"
-  lstm_output_submission_path: "/Users/mchildress/Code/my_crypto_prediction/results/predictions/lstm_submission.csv"
-  combined_output_submission_path: "/Users/mchildress/Code/my_crypto_prediction/results/predictions/combined_submission.csv"
+  xgb_output_submission_path: "/Users/mchildress/Code/my_crypto_prediction/results/xgb_submission.csv"
+  lstm_output_submission_path: "/Users/mchildress/Code/my_crypto_prediction/results/lstm_submission.csv"
+  combined_output_submission_path: "/Users/mchildress/Code/my_crypto_prediction/results/combined_submission.csv"
