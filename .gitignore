@@ -16,3 +16,4 @@ data/final/
 
 data/raw/train.csv
 data/raw/test.csv
+.env

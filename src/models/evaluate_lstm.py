@@ -6,7 +6,7 @@ import numpy as np
 import logging
 import os
 from torch.utils.data import DataLoader
-from src.models.train_model import CryptoSlidingWindowDataset, LSTMAttnClassifier  # Adjust import as necessary
+from models.train_model import CryptoSlidingWindowDataset, LSTMAttnClassifier  # Adjust import as necessary
 import joblib
 
 def evaluate_lstm(data_csv, model_path="results/models/lstm_multistep_optuna.pth", window_size=5, train_features=None, save_predictions=False, output_path="results/predictions/lstm_test_predictions.csv"):

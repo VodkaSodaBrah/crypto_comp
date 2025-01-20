@@ -1,95 +1,81 @@
-# src/models/train_model.py
-
 import os
 import sys
 import logging
 import numpy as np
 import pandas as pd
 import joblib
-import gc  # Garbage collection
-
-import optuna
-from optuna.pruners import MedianPruner
-
+import gc
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
+from torch.amp import autocast
+import optuna
+from optuna.pruners import MedianPruner
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     f1_score, confusion_matrix, recall_score, precision_score, roc_auc_score,
     roc_curve, precision_recall_curve
 )
-from sklearn.model_selection import KFold
-
+from sklearn.model_selection import TimeSeriesSplit, StratifiedKFold
 import xgboost as xgb
-from xgboost import DMatrix, train as xgb_train
-
-# For data balancing
-from imblearn.over_sampling import SMOTE
-
 import cProfile, pstats
-import concurrent.futures
-import argparse
+import psutil  
+import matplotlib.pyplot as plt
+from sklearn.feature_selection import SelectKBest, f_classif
 
-logging.basicConfig(level=logging.INFO)
+# Configure Logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler("results/logs/train_model.log"),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
-########################################################################
+def log_memory_usage(stage=""):
+    """
+    Logs the current memory usage of the process.
+    """
+    process = psutil.Process(os.getpid())
+    mem_info = process.memory_info()
+    mem_usage_gb = mem_info.rss / (1024 ** 3)
+    logger.info(f"Memory Usage at {stage}: {mem_usage_gb:.2f} GB")
+
+######################################################################
 # Utility: Create Necessary Directories
-########################################################################
+######################################################################
 
 def create_directories():
     """
     Create necessary directories if they don't exist.
     """
-    directories = ["results/models", "results"]
+    directories = ["results/models", "results/logs", "results"]
     for dir_path in directories:
         os.makedirs(dir_path, exist_ok=True)
         logger.info(f"Directory checked/created: {dir_path}")
 
-########################################################################
-# Additional Metric Printing
-########################################################################
+######################################################################
+# Utility: Downcast DataFrame for Memory Optimization
+######################################################################
 
-def evaluate_and_print_metrics(y_true, y_prob, prefix="Model"):
+def downcast_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Computes and prints confusion matrix, recall, precision, F1, and ROC AUC for the given predictions.
-    Also prints top-level info about ROC curve and precision-recall curve thresholds.
+    Downcast numerical columns to the most efficient data type.
     """
-    # 1. Binary predictions at 0.5
-    y_pred = (y_prob >= 0.5).astype(int)
+    float_cols = df.select_dtypes(include=['float']).columns
+    int_cols = df.select_dtypes(include=['int']).columns
 
-    # 2. Metrics
-    cm = confusion_matrix(y_true, y_pred)
-    rec = recall_score(y_true, y_pred, zero_division=0)
-    prec = precision_score(y_true, y_pred, zero_division=0)
-    f1 = f1_score(y_true, y_pred, average="macro")
+    df[float_cols] = df[float_cols].astype(np.float32)
+    df[int_cols] = df[int_cols].astype(np.int32)
 
-    # If classes are [0,1] and both present, compute ROC AUC
-    try:
-        auc = roc_auc_score(y_true, y_prob)
-    except ValueError:
-        auc = float('nan')
+    return df
 
-    logger.info(f"[{prefix}] Confusion Matrix:\n{cm}")
-    logger.info(f"[{prefix}] Recall={rec:.4f}  Precision={prec:.4f}  F1={f1:.4f}  AUC={auc:.4f}")
-
-    # 3. ROC Curve (truncated display)
-    fpr, tpr, roc_thresh = roc_curve(y_true, y_prob)
-    logger.info(
-        f"[{prefix}] ROC curve points (showing first 5):\n"
-        f"   FPR={fpr[:5]}, TPR={tpr[:5]}, TH={roc_thresh[:5]} (truncated)"
-    )
-    
-    # 4. Precision-Recall Curve (truncated display)
-    pr_prec, pr_rec, pr_thresh = precision_recall_curve(y_true, y_prob)
-    logger.info(
-        f"[{prefix}] Precision-Recall points (showing first 5):\n"
-        f"   Precision={pr_prec[:5]}, Recall={pr_rec[:5]}, TH={pr_thresh[:5]} (truncated)"
-    )
-
-########################################################################
-# Utility: Clean & Check
-########################################################################
+######################################################################
+# Utility: Clean & Check DataFrame
+######################################################################
 
 def clean_dataframe(df: pd.DataFrame, fill_value: float = 0.0) -> pd.DataFrame:
     """
@@ -100,6 +86,9 @@ def clean_dataframe(df: pd.DataFrame, fill_value: float = 0.0) -> pd.DataFrame:
     return df
 
 def check_infinite_values(df, name: str):
+    """
+    Check and log if there are any infinite values in the DataFrame.
+    """
     numeric_df = df.select_dtypes(include=[np.number])
     if not np.isfinite(numeric_df).all().all():
         inf_count = np.isinf(numeric_df).sum().sum()
@@ -107,37 +96,46 @@ def check_infinite_values(df, name: str):
     else:
         logger.info(f"No infinite values found in numeric columns of {name}.")
 
-########################################################################
-# Data Balancing (SMOTE)
-########################################################################
+######################################################################
+# Feature Selection
+######################################################################
 
-def rebalance_data(df):
+def select_features(X_train, y_train, X_val, k=50):
     """
-    Physically oversample the minority class in the training DataFrame using SMOTE.
-    Leaves the validation/test sets untouched.
+    Selects the top k features based on ANOVA F-test.
     """
-    # Drop 'timestamp' if present, keep 'target' aside
-    if "target" not in df.columns:
-        raise ValueError("DataFrame must contain 'target' for SMOTE balancing.")
-    feature_cols = [c for c in df.columns if c not in ("timestamp", "target")]
+    selector = SelectKBest(score_func=f_classif, k=k)
+    selector.fit(X_train, y_train)
+    
+    selected_features = [feature for bool, feature in zip(selector.get_support(), X_train.columns) if bool]
+    
+    X_train_selected = selector.transform(X_train)
+    X_val_selected = selector.transform(X_val)
+    
+    logger.info(f"Selected top {k} features: {selected_features}")
+    
+    return X_train_selected, X_val_selected, selected_features
 
-    X = df[feature_cols].copy()
-    y = df["target"].copy()
+######################################################################
+# Weighted Loss Function Definitions
+######################################################################
 
-    logger.info("Applying SMOTE to rebalance classes in the training set...")
-    sm = SMOTE(random_state=42)
-    X_res, y_res = sm.fit_resample(X, y)
-    logger.info(f"SMOTE done. Original shape={X.shape}, new shape={X_res.shape}.")
+class WeightedCrossEntropyLoss(nn.CrossEntropyLoss):
+    def __init__(self, class_weights=None, **kwargs):
+        super().__init__(weight=class_weights, **kwargs)
 
-    # Rebuild the DataFrame
-    balanced_df = pd.DataFrame(X_res, columns=feature_cols)
-    balanced_df["target"] = y_res.values
+def calculate_class_weights(y_train):
+    """
+    Calculate class weights for imbalanced datasets.
+    """
+    class_counts = np.bincount(y_train)
+    total_samples = len(y_train)
+    class_weights = total_samples / (len(class_counts) * class_counts)
+    return torch.tensor(class_weights, dtype=torch.float32)
 
-    return balanced_df
-
-########################################################################
-# 1. CryptoSlidingWindowDataset
-########################################################################
+######################################################################
+# Dataset Definition
+######################################################################
 
 class CryptoSlidingWindowDataset(Dataset):
     def __init__(self, df, window_size=5, has_target=True):
@@ -184,9 +182,9 @@ class CryptoSlidingWindowDataset(Dataset):
         else:
             return self.X[idx]
 
-########################################################################
-# 2. LSTMAttnClassifier (with Attention)
-########################################################################
+######################################################################
+# Model Definitions
+######################################################################
 
 class BahdanauAttention(nn.Module):
     def __init__(self, hidden_dim):
@@ -204,8 +202,8 @@ class BahdanauAttention(nn.Module):
         return context, attn_weights
 
 class LSTMAttnClassifier(nn.Module):
-    def __init__(self, input_dim, hidden_dim=64, dropout=0.2, num_layers=1,
-                 num_classes=2, use_attention=True, bidirectional=False):
+    def __init__(self, input_dim, hidden_dim=256, dropout=0.3, num_layers=2,
+                 num_classes=2, use_attention=True, bidirectional=True):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
@@ -241,568 +239,542 @@ class LSTMAttnClassifier(nn.Module):
         logits = self.fc(context)
         return logits
 
-########################################################################
-# 3. XGBoost + Optuna (Persistent Study + MedianPruner)
-########################################################################
+######################################################################
+# Training Functions
+######################################################################
 
-def train_xgb_optuna(X_train, y_train, X_val, y_val, num_boost_round=200, n_jobs=4):
+def train_xgb(trial, X_train, y_train, X_val, y_val):
     """
-    Train an XGBoost model with Optuna hyperparam search (MedianPruner).
-    Continues an existing study if available. 
-    Uses SMOTE-based rebalancing (optional) + scale_pos_weight for class imbalance.
+    Train an XGBoost model with hyperparameter optimization using Optuna.
     """
-    # Pruner
-    pruner = MedianPruner(n_startup_trials=10, n_warmup_steps=5)
+    # Debugging: Print XGBoost version and file path
+    print(f"XGBoost Version: {xgb.__version__}")
     
-    # Compute scale_pos_weight
-    num_pos = sum(y_train == 1)
-    num_neg = sum(y_train == 0)
-    spw = num_neg / max(num_pos, 1)
+    scale_pos_weight = sum(y_train == 0) / sum(y_train == 1)
 
-    study_name = "xgb_study"
-    storage_path = "sqlite:///results/optuna_xgb.db"
-
-    try:
-        # Attempt to load an existing XGB study
-        study = optuna.load_study(study_name=study_name, storage=storage_path)
-        logger.info(f"Loaded existing Optuna study: {study_name}")
-    except KeyError:
-        study = optuna.create_study(
-            study_name=study_name,
-            storage=storage_path,
-            direction="maximize",
-            pruner=pruner
-        )
-        logger.info(f"Created new Optuna study: {study_name}")
-
-    def objective(trial):
-        params = {
-            "objective": "binary:logistic",
-            "eval_metric": "logloss",
-            "verbosity": 0,
-            "eta": trial.suggest_float("eta", 1e-4, 0.5, log=True),
-            "max_depth": trial.suggest_int("max_depth", 3, 12),
-            "subsample": trial.suggest_float("subsample", 0.3, 1.0),
-            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.3, 1.0),
-            "lambda": trial.suggest_float("lambda", 1e-3, 20.0, log=True),
-            "alpha": trial.suggest_float("alpha", 1e-3, 20.0, log=True),
-            "min_child_weight": trial.suggest_float("min_child_weight", 1, 15),
-            "scale_pos_weight": spw,
-            "n_jobs": n_jobs,
-        }
-
-        dtrain = xgb.DMatrix(X_train, label=y_train)
-        dval = xgb.DMatrix(X_val, label=y_val)
-        model = xgb.train(
-            params,
-            dtrain,
-            num_boost_round=2000,
-            evals=[(dval, "val")],
-            early_stopping_rounds=30,
-            verbose_eval=False
-        )
-        val_preds = model.predict(dval, iteration_range=(0, model.best_iteration+1))
-        score = f1_score(y_val, (val_preds > 0.5).astype(int), average="macro")
-
-        # Prune if trial is unpromising
-        trial.report(score, step=1)
-        if trial.should_prune():
-            raise optuna.exceptions.TrialPruned()
-
-        return score
-
-    study.optimize(objective, n_trials=1000, n_jobs=n_jobs)
-    logger.info(f"XGB Optuna best params: {study.best_params}")
-    logger.info(f"XGB Optuna best F1: {study.best_value:.4f}")
-
-    # Retrain final model
-    best_params = study.best_params
-    best_params.update({
+    param = {
         "objective": "binary:logistic",
-        "eval_metric": "logloss",
-        "verbosity": 1,
-        "scale_pos_weight": spw,
-        "n_jobs": n_jobs
-    })
+        "eval_metric": "logloss",  
+        "scale_pos_weight": scale_pos_weight,
+        "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3),
+        "max_depth": trial.suggest_int("max_depth", 3, 10),
+        "subsample": trial.suggest_float("subsample", 0.5, 1.0),
+        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
+        "min_child_weight": trial.suggest_int("min_child_weight", 1, 10),
+        "gamma": trial.suggest_float("gamma", 0, 5),
+        "n_estimators": 1000,  
+        "tree_method": "auto",  
+        "n_jobs": -1,
+    }
 
-    dtrain_final = xgb.DMatrix(X_train, label=y_train)
-    dval_final = xgb.DMatrix(X_val, label=y_val)
-    final_model = xgb.train(
-        best_params,
-        dtrain_final,
-        num_boost_round=2000,
-        evals=[(dval_final, "val")],
-        early_stopping_rounds=30,
-        verbose_eval=True
+    from xgboost.callback import EarlyStopping
+
+    model = xgb.XGBClassifier(
+        **param,
+        callbacks=[EarlyStopping(rounds=50, save_best=True)]
     )
 
-    val_preds_final = final_model.predict(dval_final, iteration_range=(0, final_model.best_iteration+1))
-    evaluate_and_print_metrics(y_val, val_preds_final, prefix="XGBoost")
+    try:
+        model.fit(
+            X_train,
+            y_train,
+            eval_set=[(X_val, y_val)],
+            verbose=False
+        )
+    except TypeError as e:
+        print(f"TypeError encountered: {e}")
+        raise e
 
-    return final_model
+    preds = model.predict(X_val)
+    f1 = f1_score(y_val, preds, average="macro")  # Compute Macro-Averaged F1
+    return f1
 
-########################################################################
-# 4. LSTM + Optuna (Persistent Study + MedianPruner)
-########################################################################
-
-def train_lstm_optuna(
-    train_df, val_df,
-    window_size=5,
-    base_epochs=3,
-    final_epochs=5,
-    batch_size=32,  # Reduced batch size
-    accumulation_steps=4,  # For gradient accumulation
-    hidden_dim_range=(32, 96),  # Adjusted to smaller range
-    use_attention=True,
-    resume_from_best=True
-):
+def train_lstm(trial, train_df, val_df, window_size=5):
     """
-    Train LSTM with attention + Optuna, using MedianPruner for pruning.
-    Resumes from existing 'lstm_study' if available. 
-    Optionally start from the best trial's params (resume_from_best).
+    Train an LSTM model with hyperparameter optimization using Optuna.
     """
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-    logger.info(f"LSTM Optuna on device: {device}")
+    logger.info(f"LSTM training on device: {device}")
 
-    # Median pruner
-    pruner = MedianPruner(n_startup_trials=10, n_warmup_steps=5)
+    train_dataset = CryptoSlidingWindowDataset(train_df, window_size=window_size)
+    val_dataset = CryptoSlidingWindowDataset(val_df, window_size=window_size)
 
-    study_name = "lstm_study"
-    storage_path = "sqlite:///results/optuna_lstm.db"
+    batch_size = trial.suggest_int("batch_size", 64, 256)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
 
-    try:
-        study = optuna.load_study(study_name=study_name, storage=storage_path)
-        logger.info(f"Loaded existing Optuna study: {study_name}")
-    except KeyError:
-        study = optuna.create_study(
-            study_name=study_name,
-            storage=storage_path,
-            direction="maximize",
-            pruner=pruner
-        )
-        logger.info(f"Created new Optuna study: {study_name}")
+    input_dim = train_dataset[0][0].shape[1]
+    num_classes = len(np.unique(train_df["target"]))
 
-    if resume_from_best and len(study.trials) > 0:
-        best_trial = study.best_trial
-        logger.info(f"Starting from best trial parameters: {best_trial.params}")
+    class_weights = calculate_class_weights(train_df["target"].values).to(device)
+    criterion = WeightedCrossEntropyLoss(class_weights=class_weights)
 
-        def fixed_params_trial(_trial):
-            # Fix best params as a trial
-            return {
-                "hidden_dim": best_trial.params["hidden_dim"],
-                "dropout": best_trial.params["dropout"],
-                "num_layers": best_trial.params["num_layers"],
-                "lr": best_trial.params["lr"],
-                "bidirectional": best_trial.params.get("bidirectional", False),
-            }
+    hidden_dim = trial.suggest_int("hidden_dim", 128, 512)
+    num_layers = trial.suggest_int("num_layers", 1, 4)
+    dropout = trial.suggest_float("dropout", 0.1, 0.5)
+    bidirectional = trial.suggest_categorical("bidirectional", [True, False])
 
-        study.enqueue_trial(fixed_params_trial(None))
+    model = LSTMAttnClassifier(
+        input_dim=input_dim,
+        hidden_dim=hidden_dim,
+        num_layers=num_layers,
+        dropout=dropout,
+        num_classes=num_classes,
+        bidirectional=bidirectional,
+    ).to(device)
 
-    train_dataset = CryptoSlidingWindowDataset(train_df, window_size=window_size, has_target=True)
-    val_dataset   = CryptoSlidingWindowDataset(val_df,   window_size=window_size, has_target=True)
+    optimizer = torch.optim.Adam(model.parameters(), lr=trial.suggest_float("learning_rate", 1e-4, 1e-2))
 
-    def objective(trial):
-        hidden_dim = trial.suggest_int("hidden_dim", hidden_dim_range[0], hidden_dim_range[1], step=32)
-        dropout = trial.suggest_float("dropout", 0.1, 0.4, step=0.05)
-        num_layers = trial.suggest_int("num_layers", 1, 2)
-        lr = trial.suggest_float("lr", 1e-4, 5e-3, log=True)
-        bidirectional = trial.suggest_categorical("bidirectional", [True, False])
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=3)
 
-        model = LSTMAttnClassifier(
-            input_dim=train_dataset[0][0].shape[1],
-            hidden_dim=hidden_dim,
-            dropout=dropout,
-            num_layers=num_layers,
-            use_attention=use_attention,
-            bidirectional=bidirectional
-        ).to(device)
+    epochs = 50
+    best_val_f1 = 0
 
-        criterion = nn.CrossEntropyLoss()
-        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    for epoch in range(epochs):
+        model.train()
+        train_loss = 0
+        for X_batch, y_batch in train_loader:
+            X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+            optimizer.zero_grad()
+            with autocast(device_type=device.type, enabled=(device.type == "mps")):
+                outputs = model(X_batch)
+                loss = criterion(outputs, y_batch)
+            loss.backward()
+            optimizer.step()
+            train_loss += loss.item()
 
-        loader_train = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
-        loader_val   = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
-
-        # Gradient Accumulation
-        optimizer.zero_grad()
-
-        # Base training with gradient accumulation
-        for ep in range(base_epochs):
-            model.train()
-            for i, (Xb, yb) in enumerate(loader_train):
-                Xb, yb = Xb.to(device, non_blocking=True), yb.to(device, non_blocking=True)
-                with torch.autocast(device_type=device.type, enabled=(device.type=="mps")):
-                    logits = model(Xb)
-                    loss = criterion(logits, yb)
-                    loss = loss / accumulation_steps
-                loss.backward()
-
-                if (i + 1) % accumulation_steps == 0 or (i + 1) == len(loader_train):
-                    optimizer.step()
-                    optimizer.zero_grad()
-
-        # Evaluate on val
+        val_loss = 0
         model.eval()
         all_preds, all_labels = [], []
         with torch.no_grad():
-            for Xb, yb in loader_val:
-                Xb, yb = Xb.to(device, non_blocking=True), yb.to(device, non_blocking=True)
-                with torch.autocast(device_type=device.type, enabled=(device.type=="mps")):
-                    out = model(Xb)
-                    preds = torch.argmax(out, dim=1)
+            for X_batch, y_batch in val_loader:
+                X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+                with autocast(device_type=device.type, enabled=(device.type == "mps")):
+                    outputs = model(X_batch)
+                    loss = criterion(outputs, y_batch)
+                val_loss += loss.item()
+                preds = torch.argmax(outputs, dim=1)
                 all_preds.extend(preds.cpu().numpy())
-                all_labels.extend(yb.cpu().numpy())
+                all_labels.extend(y_batch.cpu().numpy())
 
         val_f1 = f1_score(all_labels, all_preds, average="macro")
+        scheduler.step(val_f1)
 
-        # Cleanup to free memory
-        del model
-        del optimizer
-        torch.mps.empty_cache() if device.type == "mps" else torch.cuda.empty_cache()
-        gc.collect()
+        # Report intermediate objective value
+        trial.report(val_f1, epoch)
 
-        # Report & prune
-        trial.report(val_f1, step=1)
+        # Handle pruning based on the intermediate value
         if trial.should_prune():
+            logger.info(f"Trial {trial.number} pruned at epoch {epoch+1}")
             raise optuna.exceptions.TrialPruned()
 
-        return val_f1
+        if val_f1 > best_val_f1:
+            best_val_f1 = val_f1
 
-    study.optimize(objective, n_trials=50, n_jobs=1)  # n_jobs=1 inside each process
-    logger.info(f"LSTM Optuna best params: {study.best_params}")
-    logger.info(f"LSTM Optuna best F1: {study.best_value:.4f}")
+        # **Manual Logging of Learning Rates**
+        current_lrs = scheduler.get_last_lr()
+        logger.info(f"Epoch {epoch+1}: Current Learning Rates: {current_lrs}")
 
-    # Retrain final model
-    hp = study.best_params
-    model = LSTMAttnClassifier(
-        input_dim=train_dataset[0][0].shape[1],
-        hidden_dim=hp["hidden_dim"],
-        dropout=hp["dropout"],
-        num_layers=hp["num_layers"],
-        use_attention=use_attention,
-        bidirectional=hp.get("bidirectional", False)
-    ).to(device)
+    return best_val_f1
 
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=hp["lr"])
+######################################################################
+# Stacking Feature Importance Plot
+######################################################################
 
-    loader_train = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
-    loader_val   = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
-
-    for ep in range(final_epochs):
-        model.train()
-        for i, (Xb, yb) in enumerate(loader_train):
-            Xb, yb = Xb.to(device, non_blocking=True), yb.to(device, non_blocking=True)
-            optimizer.zero_grad()
-            with torch.autocast(device_type=device.type, enabled=(device.type=="mps")):
-                logits = model(Xb)
-                loss = criterion(logits, yb)
-                loss = loss / accumulation_steps
-            loss.backward()
-            optimizer.step()
-
-        # Evaluate after each epoch
-        model.eval()
-        val_probs, val_labels = [], []
-        with torch.no_grad():
-            for Xb, yb in loader_val:
-                Xb, yb = Xb.to(device, non_blocking=True), yb.to(device, non_blocking=True)
-                with torch.autocast(device_type=device.type, enabled=(device.type=="mps")):
-                    out = model(Xb)
-                    probs = torch.softmax(out, dim=1)[:, 1]
-                val_probs.extend(probs.cpu().numpy())
-                val_labels.extend(yb.cpu().numpy())
-
-        evaluate_and_print_metrics(np.array(val_labels), np.array(val_probs), prefix=f"LSTM(Epoch={ep+1})")
-
-    # Save the final model
-    torch.save(model.state_dict(), "results/models/lstm_optuna_final.pth")
-    logger.info("Final LSTM model saved.")
-
-    # Cleanup
-    del model
-    del optimizer
-    torch.mps.empty_cache() if device.type == "mps" else torch.cuda.empty_cache()
-    gc.collect()
-
-    return model, study.best_params
-
-########################################################################
-# 5. Out-of-Fold (OOF) Predictions for Stacking
-########################################################################
-
-def generate_oof_predictions_xgb(df, folds, features, label_col="target"):
+def plot_meta_feature_importance(meta_model, feature_names):
     """
-    Generate Out-of-Fold (OOF) predictions using XGBoost for stacking.
-
-    Args:
-        df (pd.DataFrame): The combined training and validation DataFrame.
-        folds (list): List of (train_idx, val_idx) tuples from KFold.
-        features (list): List of feature column names.
-        label_col (str): Name of the target column.
-
-    Returns:
-        np.ndarray: OOF predictions for each instance.
+    Plots feature importance for stacking meta-model.
     """
-    oof_preds = np.zeros(len(df))
+    if isinstance(meta_model, xgb.XGBClassifier):
+        importance = meta_model.feature_importances_
+        sorted_indices = np.argsort(importance)[::-1]
+        sorted_features = [feature_names[i] for i in sorted_indices]
+        sorted_importance = importance[sorted_indices]
+        
+        plt.figure(figsize=(10, 6))
+        plt.bar(sorted_features, sorted_importance)
+        plt.xlabel("Features")
+        plt.ylabel("Importance Score")
+        plt.title("Meta-Model Feature Importance")
+        plt.xticks(rotation=90)
+        plt.tight_layout()
+        plt.savefig("results/models/meta_model_feature_importance.png")
+        plt.close()
+    elif isinstance(meta_model, (RandomForestClassifier, LogisticRegression)):
+        if hasattr(meta_model, 'coef_'):
+            importances = meta_model.coef_[0]
+        else:
+            importances = meta_model.feature_importances_
+        sorted_indices = np.argsort(importances)[::-1]
+        sorted_features = [feature_names[i] for i in sorted_indices]
+        sorted_importance = importances[sorted_indices]
+        
+        plt.figure(figsize=(10, 6))
+        plt.bar(sorted_features, sorted_importance)
+        plt.xlabel("Features")
+        plt.ylabel("Importance Score")
+        plt.title("Meta-Model Feature Importance")
+        plt.xticks(rotation=90)
+        plt.tight_layout()
+        plt.savefig("results/models/meta_model_feature_importance.png")
+        plt.close()
+    else:
+        logger.warning("Unsupported meta-model type for feature importance plotting.")
+
+######################################################################
+# OOF Predictions for XGBoost
+######################################################################
+
+def generate_oof_predictions_xgb(combined_df, folds, features, label_col="target"):
+    """
+    Generate out-of-fold (OOF) predictions for XGBoost.
+    """
+    oof_preds = np.zeros(len(combined_df))
     
-    for fold, (train_idx, val_idx) in enumerate(folds):
-        logger.info(f"XGB Fold {fold + 1}/{len(folds)}")
+    for fold, (train_idx, val_idx) in enumerate(folds, 1):  
+        logger.info(f"Training XGBoost Fold {fold}/{len(folds)}")
+        train_fold = combined_df.iloc[train_idx]
+        val_fold = combined_df.iloc[val_idx]
         
-        X_train, y_train = df.iloc[train_idx][features], df.iloc[train_idx][label_col]
-        X_val, y_val = df.iloc[val_idx][features], df.iloc[val_idx][label_col]
+        X_train = train_fold[features]
+        y_train = train_fold[label_col].values
+        X_val = val_fold[features]
+        y_val = val_fold[label_col].values
         
-        dtrain = xgb.DMatrix(X_train, label=y_train)
-        dval = xgb.DMatrix(X_val, label=y_val)
+        # Define storage and study name
+        storage_path = "sqlite:///results/models/optuna_xgb.db"
+        study_name = f"xgb_study_fold{fold}"
         
-        # Retrieve the best parameters from the Optuna study
-        study = optuna.load_study(study_name="xgb_study", storage="sqlite:///results/optuna_xgb.db")
-        best_params = study.best_params.copy()
+        # Optimize hyperparameters with Optuna
+        study = optuna.create_study(
+            direction="maximize",  # Maximizing F1
+            pruner=MedianPruner(n_startup_trials=5, n_warmup_steps=5),
+            study_name=study_name,
+            storage=storage_path,
+            load_if_exists=True
+        )
+        study.optimize(lambda trial: train_xgb(trial, X_train, y_train, X_val, y_val), n_trials=50, timeout=600)
+        
+        logger.info(f"Best parameters for Fold {fold}: {study.best_params}")
+        logger.info(f"Best F1 for Fold {fold}: {study.best_value:.4f}")  
+        
+        # Train final model with best hyperparameters
+        best_params = study.best_params
         best_params.update({
             "objective": "binary:logistic",
             "eval_metric": "logloss",
-            "verbosity": 0,
-            "scale_pos_weight": y_train.value_counts()[0] / y_train.value_counts()[1],
-            "n_jobs": 4,  # Adjust based on your system
+            "scale_pos_weight": sum(y_train == 0) / sum(y_train == 1),
+            "n_estimators": 1000, 
+            "tree_method": "auto",  
+            "n_jobs": -1,
         })
         
-        # Train the model
-        model = xgb.train(
-            best_params,
-            dtrain,
-            num_boost_round=2000,
-            evals=[(dval, "val")],
-            early_stopping_rounds=30,
-            verbose_eval=False
+        from xgboost.callback import EarlyStopping
+        
+        model = xgb.XGBClassifier(
+            **best_params,
+            callbacks=[EarlyStopping(rounds=50, save_best=True)]
         )
         
-        # Predict on validation set
-        preds = model.predict(dval, iteration_range=(0, model.best_iteration + 1))
-        oof_preds[val_idx] = preds
+        model.fit(
+            X_train,
+            y_train,
+            eval_set=[(X_val, y_val)],
+            verbose=False
+        )
         
-        logger.info(f"Fold {fold + 1} completed. Best iteration: {model.best_iteration}")
+        # Generate binary predictions
+        val_preds = model.predict(X_val)
+        oof_preds[val_idx] = val_preds  # Store predictions as binary for F1
     
     return oof_preds
 
-def generate_oof_predictions_lstm(df, folds, window_size=5, label_col="target"):
-    """
-    Generate Out-of-Fold (OOF) predictions using LSTM for stacking.
+######################################################################
+# OOF Predictions for LSTM
+######################################################################
 
-    Args:
-        df (pd.DataFrame): The combined training and validation DataFrame.
-        folds (list): List of (train_idx, val_idx) tuples from KFold.
-        window_size (int): The size of the sliding window.
-        label_col (str): Name of the target column.
-
-    Returns:
-        np.ndarray: OOF predictions for each instance.
+def generate_oof_predictions_lstm(combined_df, folds, features, window_size=5, label_col="target"):
     """
-    oof_preds = np.zeros(len(df))
+    Generate out-of-fold (OOF) predictions for LSTM.
+    """
+    oof_preds = np.zeros(len(combined_df))
     
-    for fold, (train_idx, val_idx) in enumerate(folds):
-        logger.info(f"LSTM Fold {fold + 1}/{len(folds)}")
+    for fold, (train_idx, val_idx) in enumerate(folds, 1):  
+        logger.info(f"Training LSTM Fold {fold}/{len(folds)}")
+        train_fold = combined_df.iloc[train_idx]
+        val_fold = combined_df.iloc[val_idx]
         
-        train_subset = df.iloc[train_idx].reset_index(drop=True)
-        val_subset = df.iloc[val_idx].reset_index(drop=True)
+        # Define storage and study name
+        storage_path = "sqlite:///results/models/optuna_lstm.db"
+        study_name = f"lstm_study_fold{fold}"
         
-        # Load the best parameters from the Optuna study
-        study = optuna.load_study(study_name="lstm_study", storage="sqlite:///results/optuna_lstm.db")
-        best_params = study.best_params.copy()
+        # Create or load the Optuna study
+        study = optuna.create_study(
+            direction="maximize", 
+            pruner=MedianPruner(n_startup_trials=5, n_warmup_steps=5),
+            study_name=study_name,
+            storage=storage_path,
+            load_if_exists=True
+        )
         
-        model = LSTMAttnClassifier(
-            input_dim=train_subset[features].shape[1],
-            hidden_dim=best_params["hidden_dim"],
-            dropout=best_params["dropout"],
-            num_layers=best_params["num_layers"],
-            use_attention=best_params["use_attention"],
-            bidirectional=best_params.get("bidirectional", False)
+        # Optimize hyperparameters with Optuna by passing the trial to train_lstm
+        study.optimize(
+            lambda trial: train_lstm(trial, train_fold, val_fold, window_size=window_size),
+            n_trials=50,
+            timeout=1800  
+        )
+        
+        logger.info(f"Best parameters for Fold {fold}: {study.best_params}")
+        logger.info(f"Best F1 for Fold {fold}: {study.best_value:.4f}")
+        
+        # Train final model with best hyperparameters
+        best_params = study.best_params
+        
+        lstm_model = LSTMAttnClassifier(
+            input_dim=len(features),
+            hidden_dim=best_params.get("hidden_dim", 256),
+            num_layers=best_params.get("num_layers", 2),
+            dropout=best_params.get("dropout", 0.3),
+            num_classes=len(np.unique(train_fold["target"])),
+            bidirectional=best_params.get("bidirectional", True),
         ).to(torch.device("mps" if torch.backends.mps.is_available() else "cpu"))
         
-        criterion = nn.CrossEntropyLoss()
-        optimizer = torch.optim.Adam(model.parameters(), lr=best_params["lr"])
+        # Set up optimizer and scheduler
+        optimizer = torch.optim.Adam(lstm_model.parameters(), lr=best_params.get("learning_rate", 1e-3))
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=3)
         
-        train_dataset = CryptoSlidingWindowDataset(train_subset, window_size=window_size, has_target=True)
-        val_dataset = CryptoSlidingWindowDataset(val_subset, window_size=window_size, has_target=True)
+        # Prepare datasets and loaders
+        train_dataset = CryptoSlidingWindowDataset(train_fold, window_size=window_size, has_target=True)
+        val_dataset = CryptoSlidingWindowDataset(val_fold, window_size=window_size, has_target=True)
         
-        loader_train = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=4, pin_memory=True)  # Reduced batch size
-        loader_val = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=4, pin_memory=True)  # Reduced batch size
+        train_loader = DataLoader(
+            train_dataset, 
+            batch_size=best_params.get("batch_size", 128), 
+            shuffle=True, 
+            num_workers=4, 
+            pin_memory=True
+        )
+        val_loader = DataLoader(
+            val_dataset, 
+            batch_size=best_params.get("batch_size", 128), 
+            shuffle=False, 
+            num_workers=4, 
+            pin_memory=True
+        )
         
-        # Train the model (base epochs)
-        model.train()
-        optimizer.zero_grad()
-        for epoch in range(3):  # Base epochs
-            for i, (X_batch, y_batch) in enumerate(loader_train):
-                X_batch, y_batch = X_batch.to(model.lstm.weight_ih_l0.device, non_blocking=True), y_batch.to(model.lstm.weight_ih_l0.device, non_blocking=True)
-                with torch.autocast(device_type=model.lstm.weight_ih_l0.device.type, enabled=(model.lstm.weight_ih_l0.device.type=="mps")):
-                    outputs = model(X_batch)
+        # Calculate class weights
+        class_weights = calculate_class_weights(train_fold["target"].values).to(
+            torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+        )
+        criterion = WeightedCrossEntropyLoss(class_weights=class_weights)
+        
+        # Training loop
+        epochs = 50
+        best_val_f1 = 0
+        device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+        
+        for epoch in range(epochs):
+            lstm_model.train()
+            train_loss = 0
+            for X_batch, y_batch in train_loader:
+                X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+                optimizer.zero_grad()
+                with autocast(device_type=device.type, enabled=(device.type == "mps")):
+                    outputs = lstm_model(X_batch)
                     loss = criterion(outputs, y_batch)
-                    loss = loss / 4  # Accumulation steps
                 loss.backward()
-                
-                if (i + 1) % 4 == 0 or (i + 1) == len(loader_train):
-                    optimizer.step()
-                    optimizer.zero_grad()
-
-        # Evaluate on validation set
-        model.eval()
+                optimizer.step()
+                train_loss += loss.item()
+    
+            lstm_model.eval()
+            all_preds, all_labels = [], []
+            with torch.no_grad():
+                for X_batch, y_batch in val_loader:
+                    X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+                    with autocast(device_type=device.type, enabled=(device.type == "mps")):
+                        outputs = lstm_model(X_batch)
+                        loss = criterion(outputs, y_batch)
+                    preds = torch.argmax(outputs, dim=1)
+                    all_preds.extend(preds.cpu().numpy())
+                    all_labels.extend(y_batch.cpu().numpy())
+    
+            val_f1 = f1_score(all_labels, all_preds, average="macro")
+            scheduler.step(val_f1)
+    
+            if val_f1 > best_val_f1:
+                best_val_f1 = val_f1
+    
+            # Manual Logging of Learning Rates
+            current_lrs = scheduler.get_last_lr()
+            logger.info(f"Epoch {epoch+1}: Current Learning Rates: {current_lrs}")
+        
+        # Generate binary predictions
+        lstm_model.eval()
         all_preds = []
         with torch.no_grad():
-            for X_batch, _ in loader_val:
-                X_batch = X_batch.to(model.lstm.weight_ih_l0.device, non_blocking=True)
-                with torch.autocast(device_type=model.lstm.weight_ih_l0.device.type, enabled=(model.lstm.weight_ih_l0.device.type=="mps")):
-                    out = model(X_batch)
-                    probs = torch.softmax(out, dim=1)[:, 1]
-                all_preds.extend(probs.cpu().numpy())
+            for X_batch, _ in val_loader:
+                X_batch = X_batch.to(device)
+                with autocast(device_type=device.type, enabled=(device.type == "mps")):
+                    outputs = lstm_model(X_batch)
+                    preds = torch.argmax(outputs, dim=1)
+                all_preds.extend(preds.cpu().numpy())
         
         oof_preds[val_idx] = all_preds
-        logger.info(f"Fold {fold + 1} completed.")
-        
-        # Cleanup to free memory
-        del model
-        del optimizer
-        torch.mps.empty_cache() if torch.backends.mps.is_available() else torch.cuda.empty_cache()
+    
+        # Cleanup
+        del lstm_model
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+        elif device.type == "mps":
+            torch.mps.empty_cache()
         gc.collect()
     
     return oof_preds
 
-########################################################################
-# 6. Train a Stacking Meta-learner
-########################################################################
+######################################################################
+# Stacking Model Training
+######################################################################
 
-def train_stacking_model(oof_xgb, oof_lstm, y, model_type="xgb", n_jobs=4):
+def train_stacking_model_cv(oof_xgb, oof_lstm, y, model_type="rf", n_jobs=2, n_splits=5):
     """
-    Train a stacking meta-learner using OOF predictions.
-
-    Args:
-        oof_xgb (np.ndarray): OOF predictions from XGBoost.
-        oof_lstm (np.ndarray): OOF predictions from LSTM.
-        y (np.ndarray): True target values.
-        model_type (str): Type of meta-model ('xgb' or 'lr').
-        n_jobs (int): Number of parallel jobs.
-
-    Returns:
-        object: Trained meta-model.
+    Train a stacking meta-learner using cross-validated OOF predictions.
     """
-    # Combine OOF predictions as features
     X_meta = np.vstack((oof_xgb, oof_lstm)).T
     y_meta = y
     
-    logger.info(f"Training stacking meta-learner using {model_type.upper()}")
-
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+    
+    meta_preds = np.zeros(len(y_meta))
+    
+    for fold, (train_idx, val_idx) in enumerate(skf.split(X_meta, y_meta), 1):
+        logger.info(f"Training meta-model Fold {fold}/{n_splits}")
+        X_train_fold, X_val_fold = X_meta[train_idx], X_meta[val_idx]
+        y_train_fold, y_val_fold = y_meta[train_idx], y_meta[val_idx]
+        
+        if model_type.lower() == "xgb":
+            scale_pos_weight = sum(y_train_fold == 0) / sum(y_train_fold == 1)
+            params = {
+                "objective": "binary:logistic",
+                "eval_metric": "logloss",  
+                "scale_pos_weight": scale_pos_weight,
+                "learning_rate": 0.1,
+                "max_depth": 3,
+                "n_estimators": 100,
+                "n_jobs": n_jobs,
+            }
+            from xgboost.callback import EarlyStopping
+            meta_model = xgb.XGBClassifier(
+                **params,
+                callbacks=[EarlyStopping(rounds=10, save_best=True)]
+            )
+            meta_model.fit(
+                X_train_fold,
+                y_train_fold,
+                eval_set=[(X_val_fold, y_val_fold)],
+                verbose=False,
+            )
+            preds = meta_model.predict(X_val_fold)
+        elif model_type.lower() == "lr":
+            meta_model = LogisticRegression(max_iter=1000, class_weight='balanced', n_jobs=n_jobs)
+            meta_model.fit(X_train_fold, y_train_fold)
+            preds = meta_model.predict(X_val_fold)
+        elif model_type.lower() == "rf":
+            meta_model = RandomForestClassifier(n_estimators=100, class_weight='balanced', n_jobs=n_jobs)
+            meta_model.fit(X_train_fold, y_train_fold)
+            preds = meta_model.predict(X_val_fold)
+        else:
+            raise ValueError("Unsupported meta-model type. Choose 'xgb', 'lr', or 'rf'.")
+        
+        meta_preds[val_idx] = preds
+        
+        # joblib.dump(meta_model, f"results/models/meta_model_fold{fold}.pkl")
+    
+    # Evaluate overall meta-model performance
+    evaluate_and_print_metrics(y_meta, meta_preds, prefix="Meta-learner")
+    
+    # Train final meta-model on the entire dataset
     if model_type.lower() == "xgb":
-        dmeta = xgb.DMatrix(X_meta, label=y_meta)
+        scale_pos_weight = sum(y_meta == 0) / sum(y_meta == 1)
         params = {
             "objective": "binary:logistic",
             "eval_metric": "logloss",
-            "verbosity": 0,
-            "eta": 0.1,
+            "scale_pos_weight": scale_pos_weight,
+            "learning_rate": 0.1,
             "max_depth": 3,
+            "n_estimators": 200,
             "n_jobs": n_jobs,
         }
-        meta_model = xgb.train(
-            params,
-            dmeta,
-            num_boost_round=1000,
-            evals=[(dmeta, "meta")],
-            early_stopping_rounds=50,
-            verbose_eval=False
+        from xgboost.callback import EarlyStopping
+        final_meta_model = xgb.XGBClassifier(
+            **params,
+            callbacks=[EarlyStopping(rounds=10, save_best=True)]
         )
+        final_meta_model.fit(X_meta, y_meta, verbose=False)
+        joblib.dump(final_meta_model, "results/models/stacking_meta_model_final_xgb.pkl")
     elif model_type.lower() == "lr":
-        from sklearn.linear_model import LogisticRegression
-        meta_model = LogisticRegression(max_iter=1000, n_jobs=n_jobs)
-        meta_model.fit(X_meta, y_meta)
-    else:
-        raise ValueError("Unsupported meta-model type. Choose 'xgb' or 'lr'.")
-
-    # Evaluate meta-model
-    if model_type.lower() == "xgb":
-        meta_preds = meta_model.predict(dmeta)
-    else:
-        meta_preds = meta_model.predict_proba(X_meta)[:, 1]
+        final_meta_model = LogisticRegression(max_iter=1000, class_weight='balanced', n_jobs=n_jobs)
+        final_meta_model.fit(X_meta, y_meta)
+        joblib.dump(final_meta_model, "results/models/stacking_meta_model_final_lr.pkl")
+    elif model_type.lower() == "rf":
+        final_meta_model = RandomForestClassifier(n_estimators=200, class_weight='balanced', n_jobs=n_jobs)
+        final_meta_model.fit(X_meta, y_meta)
+        joblib.dump(final_meta_model, "results/models/stacking_meta_model_final_rf.pkl")
     
-    evaluate_and_print_metrics(y_meta, meta_preds, prefix="Meta-learner")
+    return final_meta_model
 
-    # Save the meta-model
-    if model_type.lower() == "xgb":
-        meta_model.save_model("results/models/stacking_meta_model.json")
-    elif model_type.lower() == "lr":
-        joblib.dump(meta_model, "results/models/stacking_meta_model.pkl")
+######################################################################
+# Additional Metric Printing
+######################################################################
+
+def evaluate_and_print_metrics(y_true, y_pred, prefix="Model"):
+    """
+    Computes and prints confusion matrix, recall, precision, F1, and ROC AUC for the given predictions.
+    Also prints top-level info about ROC curve and precision-recall curve thresholds.
+    """
+    # 1. Metrics
+    cm = confusion_matrix(y_true, y_pred)
+    rec = recall_score(y_true, y_pred, zero_division=0)
+    prec = precision_score(y_true, y_pred, zero_division=0)
+    f1 = f1_score(y_true, y_pred, average="macro")
+
+    # If classes are [0,1] and both present, compute ROC AUC
+    try:
+        auc = roc_auc_score(y_true, y_pred)
+    except ValueError:
+        auc = float('nan')
+
+    logger.info(f"[{prefix}] Confusion Matrix:\n{cm}")
+    logger.info(f"[{prefix}] Recall={rec:.4f}  Precision={prec:.4f}  F1={f1:.4f}  AUC={auc:.4f}")
+
+    # 2. ROC Curve (truncated display)
+    fpr, tpr, roc_thresh = roc_curve(y_true, y_pred)
+    logger.info(
+        f"[{prefix}] ROC curve points (showing first 5):\n"
+        f"   FPR={fpr[:5]}, TPR={tpr[:5]}, TH={roc_thresh[:5]} (truncated)"
+    )
     
-    return meta_model
+    # 3. Precision-Recall Curve (truncated display)
+    pr_prec, pr_rec, pr_thresh = precision_recall_curve(y_true, y_pred)
+    logger.info(
+        f"[{prefix}] Precision-Recall points (showing first 5):\n"
+        f"   Precision={pr_prec[:5]}, Recall={pr_rec[:5]}, TH={pr_thresh[:5]} (truncated)"
+    )
 
-########################################################################
-# 7. Top-Level Wrapper Functions
-########################################################################
-
-def run_xgb_wrapper(train_csv, val_csv, train_features, val_features):
-    """
-    Wrapper function to train XGBoost. Intended to be called by ProcessPoolExecutor.
-    """
-    logger.info("Starting XGBoost training in child process...")
-    try:
-        # Load data within the process
-        train_df = pd.read_csv(train_csv)
-        val_df = pd.read_csv(val_csv)
-        train_df = clean_dataframe(train_df)
-        val_df = clean_dataframe(val_df)
-        train_df = rebalance_data(train_df)
-        
-        # Ensure feature sets match
-        if set(train_features) != set(val_features):
-            missing_in_val = set(train_features) - set(val_features)
-            missing_in_train = set(val_features) - set(train_features)
-            logger.warning(
-                f"Feature mismatch! Train missing in val: {missing_in_val}, "
-                f"Val missing in train: {missing_in_train}"
-            )
-        else:
-            logger.info("Train/Val feature sets match within child process.")
-        
-        # Train XGBoost
-        xgb_model = train_xgb_optuna(train_df[train_features].values, train_df["target"].values,
-                                     val_df[val_features].values, val_df["target"].values,
-                                     num_boost_round=200, n_jobs=4)
-        xgb_model.save_model("results/models/xgb_optuna_final.json")
-        logger.info("XGBoost training completed in child process.")
-        return "XGBoost Training Completed"
-    except Exception as e:
-        logger.error(f"XGBoost training failed: {e}")
-        raise e
-
-def run_lstm_wrapper(train_csv, val_csv, window_size=5, base_epochs=3, final_epochs=5,
-                    batch_size=32, accumulation_steps=4, hidden_dim_range=(32, 96),
-                    use_attention=True, resume_from_best=True):
-    """
-    Wrapper function to train LSTM. Intended to be called by ProcessPoolExecutor.
-    """
-    logger.info("Starting LSTM training in child process...")
-    try:
-        # Load data within the process
-        train_df = pd.read_csv(train_csv)
-        val_df = pd.read_csv(val_csv)
-        train_df = clean_dataframe(train_df)
-        val_df = clean_dataframe(val_df)
-        train_df = rebalance_data(train_df)
-        
-        # Train LSTM
-        lstm_model, lstm_params = train_lstm_optuna(
-            train_df, val_df, window_size=window_size,
-            base_epochs=base_epochs, final_epochs=final_epochs, batch_size=batch_size,
-            accumulation_steps=accumulation_steps, hidden_dim_range=hidden_dim_range,
-            use_attention=use_attention, resume_from_best=resume_from_best
-        )
-        torch.save(lstm_model.state_dict(), "results/models/lstm_optuna_final.pth")
-        logger.info("LSTM training completed in child process.")
-        return "LSTM Training Completed"
-    except Exception as e:
-        logger.error(f"LSTM training failed: {e}")
-        raise e
-
-########################################################################
-# 8. Main Routine (with cProfile)
-########################################################################
+######################################################################
+# Run the Main Function
+######################################################################
 
 def main():
+    # Confirm the updated script is running
+    print("Running the updated train_model.py script.")
+    
+    if sys.platform.startswith("darwin") or sys.platform.startswith("win"):
+        import multiprocessing as mp
+        try:
+            mp.set_start_method('spawn', force=True)
+        except RuntimeError:
+            pass 
+
     # Create necessary directories
     create_directories()
 
@@ -811,74 +783,78 @@ def main():
     profiler.enable()
 
     logger.info("Loading train & val data")
-    train_csv = "data/intermediate/train_fe.csv"
-    val_csv   = "data/intermediate/val_fe.csv"
-    train_df  = pd.read_csv(train_csv)
-    val_df    = pd.read_csv(val_csv)
+    log_memory_usage("After Loading Data")
+    
+    train_csv = "/Users/mchildress/Code/my_crypto_prediction/data/intermediate/train_fe.csv"
+    val_csv   = "/Users/mchildress/Code/my_crypto_prediction/data/intermediate/val_fe.csv"
+
+    # Load data with specified dtypes
+    dtype_mapping = {'target': 'int32'}
+    train_df = pd.read_csv(train_csv, dtype=dtype_mapping)
+    val_df = pd.read_csv(val_csv, dtype=dtype_mapping)
+
+    log_memory_usage("After Loading CSVs")
 
     # Clean & check
     train_df = clean_dataframe(train_df)
-    val_df   = clean_dataframe(val_df)
+    val_df = clean_dataframe(val_df)
     check_infinite_values(train_df, "train_df")
-    check_infinite_values(val_df,   "val_df")
+    check_infinite_values(val_df, "val_df")
 
-    # Rebalance only the training set
-    train_df = rebalance_data(train_df)
+    log_memory_usage("After Cleaning Data")
 
-    # Verify feature sets after rebalancing
+    # Feature Selection
     train_features = [c for c in train_df.columns if c not in ("timestamp", "target")]
-    val_features   = [c for c in val_df.columns   if c not in ("timestamp", "target")]
-    if set(train_features) != set(val_features):
-        missing_in_val = set(train_features) - set(val_features)
-        missing_in_train = set(val_features) - set(train_features)
-        logger.warning(
-            f"Feature mismatch! Train missing in val: {missing_in_val}, "
-            f"Val missing in train: {missing_in_train}"
-        )
-    else:
-        logger.info("Train/Val feature sets match.")
+    val_features = [c for c in val_df.columns if c not in ("timestamp", "target")]
 
-    # ===== XGB + Optuna (with Pruning) and LSTM + Optuna (with Pruning) =====
-    # Define the file paths to pass to child processes
-    train_processed_csv = train_csv  # Assuming SMOTE is done in main and saved to train_fe.csv
-    val_processed_csv = val_csv        # Assuming validation data is unchanged
+    X_train = train_df[train_features]
+    y_train = train_df["target"].values
+    X_val = val_df[val_features]
+    y_val = val_df["target"].values
 
-    # Execute both studies in parallel
-    with concurrent.futures.ProcessPoolExecutor(max_workers=2) as executor:
-        future_xgb = executor.submit(run_xgb_wrapper, train_processed_csv, val_processed_csv, train_features, val_features)
-        future_lstm = executor.submit(run_lstm_wrapper, train_processed_csv, val_processed_csv)
+    # Feature Selection
+    k = min(50, X_train.shape[1])  
+    X_train_selected, X_val_selected, selected_features = select_features(
+        X_train, y_train, X_val, k=k
+    )
+    logger.info(f"Selected Features: {selected_features}")
 
-        # Wait for both to complete
-        try:
-            xgb_result = future_xgb.result()
-            lstm_result = future_lstm.result()
-        except Exception as e:
-            logger.error(f"Error during parallel training: {e}")
-            sys.exit(1)
+    # Initialize TimeSeriesSplit and convert folds to a list
+    tscv = TimeSeriesSplit(n_splits=5)
+    folds = list(tscv.split(train_df))
 
-    # ===== Generating OOF Predictions for Stacking =====
-    logger.info("===== Generating OOF for Stacking =====")
-    combined_df = pd.concat([train_df, val_df], axis=0).reset_index(drop=True)
-    features = [c for c in combined_df.columns if c not in ("timestamp","target")]
+    # Train XGBoost with Optuna
+    logger.info("Training XGBoost with Optuna...")
+    oof_xgb = generate_oof_predictions_xgb(train_df, folds, selected_features, label_col="target")
+    logger.info("XGBoost OOF predictions completed.")
 
-    kf = KFold(n_splits=5, shuffle=True, random_state=42)
-    folds = list(kf.split(combined_df))
+    # Train LSTM with Optuna
+    logger.info("Training LSTM with Optuna...")
+    oof_lstm = generate_oof_predictions_lstm(train_df, folds, selected_features, window_size=5, label_col="target")
+    logger.info("LSTM OOF predictions completed.")
 
-    # Generate OOF predictions
-    logger.info("Generating OOF predictions for XGBoost...")
-    oof_xgb = generate_oof_predictions_xgb(combined_df, folds, features, label_col="target")
-    
-    logger.info("Generating OOF predictions for LSTM...")
-    oof_lstm = generate_oof_predictions_lstm(combined_df, folds, window_size=5, label_col="target")
+    log_memory_usage("After Generating OOF Predictions")
 
     # ===== Train Stacking Meta-learner =====
     logger.info("===== Training Stacking Meta-learner =====")
-    y_combined = combined_df["target"].values
-    meta_model = train_stacking_model(oof_xgb, oof_lstm, y_combined, model_type="xgb", n_jobs=4)
+    y_combined = train_df["target"].values
+    meta_model = train_stacking_model_cv(
+        oof_xgb=oof_xgb,
+        oof_lstm=oof_lstm,
+        y=y_combined,
+        model_type="rf",
+        n_jobs=2,
+        n_splits=5
+    )
+    logger.info("Stacking meta-learner training completed.")
+
+    log_memory_usage("After Training Stacking Meta-learner")
+
+    # ===== Feature Importance Plot =====
+    plot_meta_feature_importance(meta_model, feature_names=["XGBoost", "LSTM"])
 
     logger.info(
-        "All done! XGB+LSTM + attention trained with SMOTE rebalancing, median pruning, "
-        "and cProfile profiling."
+        "All done! XGB+LSTM trained with weighted loss functions and Optuna hyperparameter tuning."
     )
 
     # Stop profiler
@@ -887,6 +863,10 @@ def main():
     stats = pstats.Stats(profiler).sort_stats(pstats.SortKey.CUMULATIVE)
     stats.dump_stats(profile_path)
     logger.info(f"Profiling stats saved to {profile_path}")
+
+######################################################################
+# Run the Main Function
+######################################################################
 
 if __name__ == "__main__":
     main()

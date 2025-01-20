@@ -1,0 +1,30 @@
+# config.yml
+
+# Preprocessing Parameters
+preprocess_chunksize: 100000  # Adjust based on system memory
+preprocess_fillna_method: ffill  # Options: 'ffill', 'bfill'
+
+# Feature Engineering Parameters
+feature_engineering_window: 5
+feature_engineering_bb_window: 20
+
+# Training Parameters
+num_trials: 100  # Number of Optuna trials for hyperparameter tuning
+
+# Ensemble Parameters
+ensemble_method: performance  # Options: 'equal', 'performance', 'stacking'
+optimize_window: false
+
+# Model Performance Metrics (for weighting schemes)
+xgb_f1: 0.5231  # Replace with actual validation F1 Score for XGBoost
+lstm_f1: 0.5186  # Replace with actual validation F1 Score for LSTM
+
+# Model Paths
+model_paths:
+  xgb: "results/models/xgb_best_model.json"
+  lstm: "results/models/lstm_multistep_optuna.pth"
+
+# Output Paths
+output_paths:
+  submission_weighted: "results/predictions/submission_weighted.csv"
+  submission_stacking: "results/predictions/submission_stacking.csv"

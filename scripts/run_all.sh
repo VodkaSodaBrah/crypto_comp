@@ -21,8 +21,8 @@ mkdir -p results/predictions
 # 1. Split Data
 ##############################
 echo "Step 1: Splitting data..."
-# This script ensures the test set is exactly 909,617 rows.
-python src/data/split_data.py --config $CONFIG_FILE
+# Removed the --config flag as split_data.py does not accept it.
+python src/data/split_data.py
 
 ########################################
 # 2. Preprocess Data
@@ -78,14 +78,14 @@ python src/features/feature_engineering.py \
 # 4. Train Models (XGB, LSTM, Stacking)
 ########################################
 echo "Step 4: Training models..."
-# Your new train_model.py trains XGB+Optuna, LSTM+Optuna, 
-# and optionally stacking. It also prints confusion matrix, recall, AUC, etc.
+# train_model.py now handles XGBoost+Optuna, LSTM+Optuna, and Stacking Meta-Learner
 python src/models/train_model.py
 
 ########################################
 # 5. Generate Submission (Prediction)
 ########################################
 echo "Step 5: Generating predictions..."
+# Assuming generate_submission.py accepts the --config flag
 python src/models/generate_submission.py --config $CONFIG_FILE
 
 echo "Submission files are ready in results/predictions/"
