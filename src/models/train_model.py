@@ -540,7 +540,7 @@ def generate_oof_predictions_lstm(combined_df, folds, features, window_size=5, l
         # Optimize hyperparameters with Optuna by passing the trial to train_lstm
         study.optimize(
             lambda trial: train_lstm(trial, train_fold, val_fold, window_size=window_size, writer=writer, fold=fold),
-            n_trials=2,  # Set to 1 for testing; revert to 50 for full training
+            n_trials=2,
             timeout=1800  # Adjust timeout as needed
         )
         
@@ -589,7 +589,7 @@ def generate_oof_predictions_lstm(combined_df, folds, features, window_size=5, l
         criterion = WeightedCrossEntropyLoss(class_weights=class_weights)
         
         # Training loop
-        epochs = 2  # Set to 1 for testing; revert to 50 for full training
+        epochs = 2
         best_val_f1 = 0
         device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
         
@@ -621,16 +621,6 @@ def generate_oof_predictions_lstm(combined_df, folds, features, window_size=5, l
             val_f1 = f1_score(all_labels, all_preds, average="macro")
             scheduler.step(val_f1)
     
-            # Report intermediate objective value to Optuna
-            trial.report(val_f1, epoch)
-    
-            # Handle pruning based on the intermediate value
-            if trial.should_prune():
-                logger.info(f"Trial {trial.number} pruned at epoch {epoch + 1}")
-                if writer:
-                    writer.add_scalar(f"Fold_{fold}/LSTM_Prune", epoch + 1, trial.number)
-                raise optuna.exceptions.TrialPruned()
-    
             if val_f1 > best_val_f1:
                 best_val_f1 = val_f1
     
@@ -657,15 +647,18 @@ def generate_oof_predictions_lstm(combined_df, folds, features, window_size=5, l
         
         # Adjust indices to account for window_size
         adjusted_val_idx = val_idx[window_size:]
-        
+
+        # Log lengths for debugging
+        logger.info(f"Fold {fold}: len(all_preds)={len(all_preds)}, len(adjusted_val_idx)={len(adjusted_val_idx)}")
+
         # ===== Add Assertion Here =====
         assert len(all_preds) == len(adjusted_val_idx), (
             f"Fold {fold}: Mismatch between predictions ({len(all_preds)}) and adjusted validation indices ({len(adjusted_val_idx)})."
         )
-        
+
         # Assign predictions to the corresponding indices
         oof_preds[adjusted_val_idx] = all_preds  # Assign predictions to the corresponding indices
-        
+            
         # Cleanup
         del lstm_model
         if device.type == "cuda":
