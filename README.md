@@ -79,7 +79,7 @@ Outputs
 	1.	Preprocessed data will be saved to the data/processed/ directory.
 	2.	Trained models will be saved to the results/models/ directory.
 	3.	Logs and evaluation metrics will be available in the results/logs/ directory.
-	4.	Predictions will be saved in the results/predictions/ directory:
+	4.	Predictions will be saved in the results/ directory:
 	•	xgb_submission.csv
 	•	lstm_submission.csv
 	•	combined_submission.csv

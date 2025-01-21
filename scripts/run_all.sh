@@ -34,26 +34,23 @@ echo "Step 2: Preprocessing data..."
 #--- Training Data ---
 echo "Preprocessing Training Data..."
 python src/data/preprocess.py \
-    --in_csv="data/raw/train.csv" \
+    --in_csv="data/intermediate/train.csv" \
     --out_csv="data/intermediate/train_preprocessed.csv" \
-    --chunksize=100000 \
-    --fillna_method=ffill
+    --chunksize=100000
 
 #--- Validation Data ---
 echo "Preprocessing Validation Data..."
 python src/data/preprocess.py \
-    --in_csv="data/raw/val.csv" \
+    --in_csv="data/intermediate/val.csv" \
     --out_csv="data/intermediate/val_preprocessed.csv" \
-    --chunksize=100000 \
-    --fillna_method=ffill
+    --chunksize=100000
 
 #--- Test Data ---
 echo "Preprocessing Test Data..."
 python src/data/preprocess.py \
-    --in_csv="data/raw/test.csv" \
+    --in_csv="data/final/test.csv" \
     --out_csv="data/final/test_preprocessed.csv" \
-    --chunksize=100000 \
-    --fillna_method=ffill
+    --chunksize=100000
 
 ########################################
 # 3. Perform Feature Engineering
@@ -64,25 +61,19 @@ echo "Step 3: Performing feature engineering..."
 echo "Feature Engineering on Training Data..."
 python src/features/feature_engineering.py \
     --in_csv="data/intermediate/train_preprocessed.csv" \
-    --out_csv="data/intermediate/train_fe.csv" \
-    --window_size=5 \
-    --bb_window=20
+    --out_csv="data/intermediate/train_fe.csv"
 
 #--- Validation Data ---
 echo "Feature Engineering on Validation Data..."
 python src/features/feature_engineering.py \
     --in_csv="data/intermediate/val_preprocessed.csv" \
-    --out_csv="data/intermediate/val_fe.csv" \
-    --window_size=5 \
-    --bb_window=20
+    --out_csv="data/intermediate/val_fe.csv"
 
 #--- Test Data ---
 echo "Feature Engineering on Test Data..."
 python src/features/feature_engineering.py \
     --in_csv="data/final/test_preprocessed.csv" \
-    --out_csv="data/final/test_fe.csv" \
-    --window_size=5 \
-    --bb_window=20
+    --out_csv="data/final/test_fe.csv"
 
 ########################################
 # 4. Train Models (XGB, LSTM, Stacking)

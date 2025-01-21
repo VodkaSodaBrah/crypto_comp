@@ -540,7 +540,7 @@ def generate_oof_predictions_lstm(combined_df, folds, features, window_size=5, l
         # Optimize hyperparameters with Optuna by passing the trial to train_lstm
         study.optimize(
             lambda trial: train_lstm(trial, train_fold, val_fold, window_size=window_size, writer=writer, fold=fold),
-            n_trials=2,
+            n_trials=100,
             timeout=1800  # Adjust timeout as needed
         )
         
@@ -673,7 +673,7 @@ def generate_oof_predictions_lstm(combined_df, folds, features, window_size=5, l
 # Stacking Model Training
 ######################################################################
 
-def train_stacking_model_cv(oof_xgb, oof_lstm, y, model_type="rf", n_jobs=2, n_splits=2, writer=None):
+def train_stacking_model_cv(oof_xgb, oof_lstm, y, model_type="rf", n_jobs=2, n_splits=5, writer=None):
     """
     Train a stacking meta-learner using cross-validated OOF predictions.
     """
@@ -899,7 +899,7 @@ def main():
     logger.info(f"Selected Features: {selected_features}")
 
     # Initialize TimeSeriesSplit and convert folds to a list
-    tscv = TimeSeriesSplit(n_splits=2)
+    tscv = TimeSeriesSplit(n_splits=5)
     folds = list(tscv.split(train_df))
 
     # Train XGBoost with Optuna
