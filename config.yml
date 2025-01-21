@@ -31,7 +31,7 @@ feature_selection:
     - volume_moving_avg
 
 # Training Parameters
-num_trials: 100  # Number of Optuna trials for hyperparameter tuning
+num_trials: 200  # Number of Optuna trials for hyperparameter tuning
 
 # Ensemble Parameters
 ensemble_method: stacking  # Options: 'equal', 'performance', 'stacking'
@@ -59,8 +59,8 @@ data_paths:
 # Stacking Meta-learner Parameters
 stacking_meta_learner:
   model_type: "rf"  # Options: 'xgb', 'lr', 'rf'
-  n_splits: 2
-  n_jobs: 2
+  n_splits: 5
+  n_jobs: 8
 
 # LSTM Parameters
 lstm:

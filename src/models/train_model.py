@@ -15,7 +15,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     f1_score, confusion_matrix, recall_score, precision_score, roc_auc_score,
-    roc_curve, precision_recall_curve
+    roc_curve, precision_recall_curve, log_loss
 )
 from sklearn.model_selection import TimeSeriesSplit, StratifiedKFold
 import xgboost as xgb
@@ -23,9 +23,11 @@ import cProfile, pstats
 import psutil  
 import matplotlib.pyplot as plt
 from sklearn.feature_selection import SelectKBest, f_classif
+import yaml
 
 # ===== Added TensorBoard Import =====
 from torch.utils.tensorboard import SummaryWriter
+import time  # For execution time logging
 
 # Configure Logging
 logging.basicConfig(
@@ -38,14 +40,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def log_memory_usage(stage=""):
+def log_memory_usage(writer, stage=""):
     """
-    Logs the current memory usage of the process.
+    Logs the current memory usage of the process to both logger and TensorBoard.
     """
     process = psutil.Process(os.getpid())
     mem_info = process.memory_info()
     mem_usage_gb = mem_info.rss / (1024 ** 3)
     logger.info(f"Memory Usage at {stage}: {mem_usage_gb:.2f} GB")
+    if writer:
+        writer.add_scalar(f"Memory_Usage/{stage}", mem_usage_gb, global_step=0)  # You can adjust global_step as needed
 
 ######################################################################
 # Utility: Create Necessary Directories
@@ -250,8 +254,10 @@ def train_xgb(trial, X_train, y_train, X_val, y_val, writer=None, fold=1):
     """
     Train an XGBoost model with hyperparameter optimization using Optuna.
     """
+    start_time = time.time()  # Start time for execution time logging
+
     # Debugging: Print XGBoost version and file path
-    print(f"XGBoost Version: {xgb.__version__}")
+    logger.info(f"XGBoost Version: {xgb.__version__}")
     
     scale_pos_weight = sum(y_train == 0) / sum(y_train == 1)
 
@@ -285,17 +291,27 @@ def train_xgb(trial, X_train, y_train, X_val, y_val, writer=None, fold=1):
             verbose=False
         )
     except TypeError as e:
-        print(f"TypeError encountered: {e}")
+        logger.error(f"TypeError encountered: {e}")
         raise e
 
     preds = model.predict(X_val)
     f1 = f1_score(y_val, preds, average="macro")  # Compute Macro-Averaged F1
+    logloss = log_loss(y_val, model.predict_proba(X_val))  # Log Loss
 
     # ===== Added TensorBoard Logging for XGBoost =====
     if writer:
         writer.add_scalar(f"Fold_{fold}/XGBoost_F1", f1, trial.number)
+        writer.add_scalar(f"Fold_{fold}/XGBoost_LogLoss", logloss, trial.number)
+        writer.add_scalar(f"Fold_{fold}/XGBoost_BestIteration", model.best_iteration, trial.number)
         for param_name, param_value in trial.params.items():
-            writer.add_scalar(f"Fold_{fold}/Hyperparameters/{param_name}", param_value, trial.number)
+            writer.add_scalar(f"Fold_{fold}/XGBoost_Hyperparameters/{param_name}", param_value, trial.number)
+
+    # Execution Time Logging
+    execution_time = time.time() - start_time
+    if writer:
+        writer.add_scalar(f"Fold_{fold}/XGBoost_ExecutionTime", execution_time, trial.number)
+
+    logger.info(f"Fold {fold} - Trial {trial.number}: F1={f1:.4f}, LogLoss={logloss:.4f}, BestIteration={model.best_iteration}, ExecutionTime={execution_time:.2f}s")
 
     return f1
 
@@ -303,6 +319,8 @@ def train_lstm(trial, train_df, val_df, window_size=5, writer=None, fold=1):
     """
     Train an LSTM model with hyperparameter optimization using Optuna.
     """
+    start_time = time.time()  # Start time for execution time logging
+
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
     logger.info(f"LSTM training on device: {device}")
 
@@ -340,12 +358,16 @@ def train_lstm(trial, train_df, val_df, window_size=5, writer=None, fold=1):
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=3)
 
-    epochs = 2
+    epochs = 25
     best_val_f1 = 0
 
     for epoch in range(epochs):
+        epoch_start_time = time.time()  # Start time for epoch
+
         model.train()
         train_loss = 0
+        correct_train = 0
+        total_train = 0
         for X_batch, y_batch in train_loader:
             X_batch, y_batch = X_batch.to(device), y_batch.to(device)
             optimizer.zero_grad()
@@ -356,19 +378,36 @@ def train_lstm(trial, train_df, val_df, window_size=5, writer=None, fold=1):
             optimizer.step()
             train_loss += loss.item()
 
+            # Calculate training accuracy
+            preds = torch.argmax(outputs, dim=1)
+            correct_train += (preds == y_batch).sum().item()
+            total_train += y_batch.size(0)
+
+        avg_train_loss = train_loss / len(train_loader)
+        train_accuracy = correct_train / total_train
+
         model.eval()
+        val_loss = 0
         all_preds, all_labels = [], []
+        correct_val = 0
+        total_val = 0
         with torch.no_grad():
             for X_batch, y_batch in val_loader:
                 X_batch, y_batch = X_batch.to(device), y_batch.to(device)
                 with autocast(device_type=device.type, enabled=(device.type == "mps")):
                     outputs = model(X_batch)
                     loss = criterion(outputs, y_batch)
+                val_loss += loss.item()
                 preds = torch.argmax(outputs, dim=1)
                 all_preds.extend(preds.cpu().numpy())
                 all_labels.extend(y_batch.cpu().numpy())
+                correct_val += (preds == y_batch).sum().item()
+                total_val += y_batch.size(0)
 
+        avg_val_loss = val_loss / len(val_loader)
         val_f1 = f1_score(all_labels, all_preds, average="macro")
+        val_accuracy = correct_val / total_val
+
         scheduler.step(val_f1)
 
         # Report intermediate objective value to Optuna
@@ -386,15 +425,29 @@ def train_lstm(trial, train_df, val_df, window_size=5, writer=None, fold=1):
 
         # ===== Added TensorBoard Logging for LSTM =====
         if writer:
-            writer.add_scalar(f"Fold_{fold}/LSTM_Train_Loss", train_loss, epoch)
+            writer.add_scalar(f"Fold_{fold}/LSTM_Train_Loss", avg_train_loss, epoch)
+            writer.add_scalar(f"Fold_{fold}/LSTM_Val_Loss", avg_val_loss, epoch)
             writer.add_scalar(f"Fold_{fold}/LSTM_Val_F1", val_f1, epoch)
+            writer.add_scalar(f"Fold_{fold}/LSTM_Train_Accuracy", train_accuracy, epoch)
+            writer.add_scalar(f"Fold_{fold}/LSTM_Val_Accuracy", val_accuracy, epoch)
             writer.add_scalar(f"Fold_{fold}/LSTM_Learning_Rate", optimizer.param_groups[0]['lr'], epoch)
 
         # Manual Logging of Learning Rates
         current_lrs = scheduler.get_last_lr()
         logger.info(f"Epoch {epoch+1}: Current Learning Rates: {current_lrs}")
 
+        # ===== Execution Time Logging for Epoch =====
+        epoch_execution_time = time.time() - epoch_start_time
+        if writer:
+            writer.add_scalar(f"Fold_{fold}/LSTM_Epoch_ExecutionTime", epoch_execution_time, epoch)
+
     # After training, return the best validation F1 score for the trial
+    total_execution_time = time.time() - start_time
+    if writer:
+        writer.add_scalar(f"Fold_{fold}/LSTM_Total_ExecutionTime", total_execution_time, trial.number)
+
+    logger.info(f"Fold {fold} - Trial {trial.number}: Best Val F1={best_val_f1:.4f}, Total Execution Time={total_execution_time:.2f}s")
+
     return best_val_f1
 
 ######################################################################
@@ -450,7 +503,8 @@ def generate_oof_predictions_xgb(combined_df, folds, features, label_col="target
     Generate out-of-fold (OOF) predictions for XGBoost.
     """
     oof_preds = np.zeros(len(combined_df))
-    
+    oof_logloss = np.zeros(len(combined_df))  # To store log loss per sample
+
     for fold, (train_idx, val_idx) in enumerate(folds, 1):  
         logger.info(f"Training XGBoost Fold {fold}/{len(folds)}")
         train_fold = combined_df.iloc[train_idx]
@@ -473,7 +527,7 @@ def generate_oof_predictions_xgb(combined_df, folds, features, label_col="target
             storage=storage_path,
             load_if_exists=True
         )
-        study.optimize(lambda trial: train_xgb(trial, X_train, y_train, X_val, y_val, writer=writer, fold=fold), n_trials=2, timeout=600)
+        study.optimize(lambda trial: train_xgb(trial, X_train, y_train, X_val, y_val, writer=writer, fold=fold), n_trials=200, timeout=600)
         
         logger.info(f"Best parameters for Fold {fold}: {study.best_params}")
         logger.info(f"Best F1 for Fold {fold}: {study.best_value:.4f}")  
@@ -503,11 +557,20 @@ def generate_oof_predictions_xgb(combined_df, folds, features, label_col="target
             verbose=False
         )
         
-        # Generate binary predictions
+        # Generate predictions
         val_preds = model.predict(X_val)
         oof_preds[val_idx] = val_preds  # Store predictions as binary for F1
-    
-    return oof_preds
+
+        # Generate probability predictions for log loss
+        val_probs = model.predict_proba(X_val)[:,1]
+        oof_logloss[val_idx] = val_probs
+
+        # ===== Added TensorBoard Logging for XGBoost Fold =====
+        if writer:
+            writer.add_scalar(f"Fold_{fold}/XGBoost_Overall_F1", f1_score(y_val, val_preds, average="macro"), fold)
+            writer.add_scalar(f"Fold_{fold}/XGBoost_Overall_LogLoss", log_loss(y_val, val_probs), fold)
+
+    return oof_preds, oof_logloss
 
 ######################################################################
 # OOF Predictions for LSTM
@@ -540,7 +603,7 @@ def generate_oof_predictions_lstm(combined_df, folds, features, window_size=5, l
         # Optimize hyperparameters with Optuna by passing the trial to train_lstm
         study.optimize(
             lambda trial: train_lstm(trial, train_fold, val_fold, window_size=window_size, writer=writer, fold=fold),
-            n_trials=100,
+            n_trials=200,
             timeout=1800  # Adjust timeout as needed
         )
         
@@ -589,13 +652,17 @@ def generate_oof_predictions_lstm(combined_df, folds, features, window_size=5, l
         criterion = WeightedCrossEntropyLoss(class_weights=class_weights)
         
         # Training loop
-        epochs = 2
+        epochs = 25
         best_val_f1 = 0
         device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
         
         for epoch in range(epochs):
+            epoch_start_time = time.time()  # Start time for epoch
+
             lstm_model.train()
             train_loss = 0
+            correct_train = 0
+            total_train = 0
             for X_batch, y_batch in train_loader:
                 X_batch, y_batch = X_batch.to(device), y_batch.to(device)
                 optimizer.zero_grad()
@@ -605,69 +672,68 @@ def generate_oof_predictions_lstm(combined_df, folds, features, window_size=5, l
                 loss.backward()
                 optimizer.step()
                 train_loss += loss.item()
-    
+
+                # Calculate training accuracy
+                preds = torch.argmax(outputs, dim=1)
+                correct_train += (preds == y_batch).sum().item()
+                total_train += y_batch.size(0)
+
+            avg_train_loss = train_loss / len(train_loader)
+            train_accuracy = correct_train / total_train
+
             lstm_model.eval()
+            val_loss = 0
             all_preds, all_labels = [], []
+            correct_val = 0
+            total_val = 0
             with torch.no_grad():
                 for X_batch, y_batch in val_loader:
                     X_batch, y_batch = X_batch.to(device), y_batch.to(device)
                     with autocast(device_type=device.type, enabled=(device.type == "mps")):
                         outputs = lstm_model(X_batch)
                         loss = criterion(outputs, y_batch)
+                    val_loss += loss.item()
                     preds = torch.argmax(outputs, dim=1)
                     all_preds.extend(preds.cpu().numpy())
                     all_labels.extend(y_batch.cpu().numpy())
-    
+                    correct_val += (preds == y_batch).sum().item()
+                    total_val += y_batch.size(0)
+
+            avg_val_loss = val_loss / len(val_loader)
             val_f1 = f1_score(all_labels, all_preds, average="macro")
+            val_accuracy = correct_val / total_val
+
             scheduler.step(val_f1)
-    
+
             if val_f1 > best_val_f1:
                 best_val_f1 = val_f1
-    
+
             # ===== Added TensorBoard Logging for LSTM =====
             if writer:
-                writer.add_scalar(f"Fold_{fold}/LSTM_Train_Loss", train_loss, epoch)
+                writer.add_scalar(f"Fold_{fold}/LSTM_Train_Loss", avg_train_loss, epoch)
+                writer.add_scalar(f"Fold_{fold}/LSTM_Val_Loss", avg_val_loss, epoch)
                 writer.add_scalar(f"Fold_{fold}/LSTM_Val_F1", val_f1, epoch)
+                writer.add_scalar(f"Fold_{fold}/LSTM_Train_Accuracy", train_accuracy, epoch)
+                writer.add_scalar(f"Fold_{fold}/LSTM_Val_Accuracy", val_accuracy, epoch)
                 writer.add_scalar(f"Fold_{fold}/LSTM_Learning_Rate", optimizer.param_groups[0]['lr'], epoch)
-    
+
             # Manual Logging of Learning Rates
             current_lrs = scheduler.get_last_lr()
             logger.info(f"Epoch {epoch+1}: Current Learning Rates: {current_lrs}")
-        
-        # Generate binary predictions with the best model
-        lstm_model.eval()
-        all_preds = []
-        with torch.no_grad():
-            for X_batch, _ in val_loader:
-                X_batch = X_batch.to(device)
-                with autocast(device_type=device.type, enabled=(device.type == "mps")):
-                    outputs = lstm_model(X_batch)
-                    preds = torch.argmax(outputs, dim=1)
-                all_preds.extend(preds.cpu().numpy())
-        
-        # Adjust indices to account for window_size
-        adjusted_val_idx = val_idx[window_size:]
 
-        # Log lengths for debugging
-        logger.info(f"Fold {fold}: len(all_preds)={len(all_preds)}, len(adjusted_val_idx)={len(adjusted_val_idx)}")
+            # ===== Execution Time Logging for Epoch =====
+            epoch_execution_time = time.time() - epoch_start_time
+            if writer:
+                writer.add_scalar(f"Fold_{fold}/LSTM_Epoch_ExecutionTime", epoch_execution_time, epoch)
 
-        # ===== Add Assertion Here =====
-        assert len(all_preds) == len(adjusted_val_idx), (
-            f"Fold {fold}: Mismatch between predictions ({len(all_preds)}) and adjusted validation indices ({len(adjusted_val_idx)})."
-        )
+        # After training, return the best validation F1 score for the trial
+        total_execution_time = time.time() - start_time
+        if writer:
+            writer.add_scalar(f"Fold_{fold}/LSTM_Total_ExecutionTime", total_execution_time, trial.number)
 
-        # Assign predictions to the corresponding indices
-        oof_preds[adjusted_val_idx] = all_preds  # Assign predictions to the corresponding indices
-            
-        # Cleanup
-        del lstm_model
-        if device.type == "cuda":
-            torch.cuda.empty_cache()
-        elif device.type == "mps":
-            torch.mps.empty_cache()
-        gc.collect()
-    
-    return oof_preds
+        logger.info(f"Fold {fold} - Trial {trial.number}: Best Val F1={best_val_f1:.4f}, Total Execution Time={total_execution_time:.2f}s")
+
+        return best_val_f1
 
 ######################################################################
 # Stacking Model Training
@@ -716,6 +782,13 @@ def train_stacking_model_cv(oof_xgb, oof_lstm, y, model_type="rf", n_jobs=2, n_s
             # ===== Optional TensorBoard Logging for Meta-Model =====
             if writer:
                 writer.add_scalar(f"Meta-Model/Fold_{fold}/XGBoost_F1", f1_score(y_val_fold, preds, average="macro"), fold)
+                writer.add_scalar(f"Meta-Model/Fold_{fold}/XGBoost_Precision", precision_score(y_val_fold, preds, average="macro"), fold)
+                writer.add_scalar(f"Meta-Model/Fold_{fold}/XGBoost_Recall", recall_score(y_val_fold, preds, average="macro"), fold)
+                try:
+                    auc = roc_auc_score(y_val_fold, meta_model.predict_proba(X_val_fold)[:,1])
+                except ValueError:
+                    auc = float('nan')
+                writer.add_scalar(f"Meta-Model/Fold_{fold}/XGBoost_ROC_AUC", auc, fold)
         
         elif model_type.lower() == "lr":
             meta_model = LogisticRegression(max_iter=1000, class_weight='balanced', n_jobs=n_jobs)
@@ -724,6 +797,13 @@ def train_stacking_model_cv(oof_xgb, oof_lstm, y, model_type="rf", n_jobs=2, n_s
             
             if writer:
                 writer.add_scalar(f"Meta-Model/Fold_{fold}/LR_F1", f1_score(y_val_fold, preds, average="macro"), fold)
+                writer.add_scalar(f"Meta-Model/Fold_{fold}/LR_Precision", precision_score(y_val_fold, preds, average="macro"), fold)
+                writer.add_scalar(f"Meta-Model/Fold_{fold}/LR_Recall", recall_score(y_val_fold, preds, average="macro"), fold)
+                try:
+                    auc = roc_auc_score(y_val_fold, meta_model.predict_proba(X_val_fold)[:,1])
+                except ValueError:
+                    auc = float('nan')
+                writer.add_scalar(f"Meta-Model/Fold_{fold}/LR_ROC_AUC", auc, fold)
         
         elif model_type.lower() == "rf":
             meta_model = RandomForestClassifier(n_estimators=100, class_weight='balanced', n_jobs=n_jobs)
@@ -732,6 +812,13 @@ def train_stacking_model_cv(oof_xgb, oof_lstm, y, model_type="rf", n_jobs=2, n_s
             
             if writer:
                 writer.add_scalar(f"Meta-Model/Fold_{fold}/RF_F1", f1_score(y_val_fold, preds, average="macro"), fold)
+                writer.add_scalar(f"Meta-Model/Fold_{fold}/RF_Precision", precision_score(y_val_fold, preds, average="macro"), fold)
+                writer.add_scalar(f"Meta-Model/Fold_{fold}/RF_Recall", recall_score(y_val_fold, preds, average="macro"), fold)
+                try:
+                    auc = roc_auc_score(y_val_fold, meta_model.predict_proba(X_val_fold)[:,1])
+                except ValueError:
+                    auc = float('nan')
+                writer.add_scalar(f"Meta-Model/Fold_{fold}/RF_ROC_AUC", auc, fold)
         
         else:
             raise ValueError("Unsupported meta-model type. Choose 'xgb', 'lr', or 'rf'.")
@@ -742,12 +829,21 @@ def train_stacking_model_cv(oof_xgb, oof_lstm, y, model_type="rf", n_jobs=2, n_s
         # joblib.dump(meta_model, f"results/models/meta_model_fold{fold}.pkl")
     
     # Evaluate overall meta-model performance
-    evaluate_and_print_metrics(y_meta, meta_preds, prefix="Meta-learner")
+    evaluate_and_print_metrics(y_meta, meta_preds, prefix="Meta-learner", writer=writer)
     
     # ===== Optional TensorBoard Logging for Meta-Model =====
     if writer:
         overall_f1 = f1_score(y_meta, meta_preds, average="macro")
+        overall_precision = precision_score(y_meta, meta_preds, average="macro")
+        overall_recall = recall_score(y_meta, meta_preds, average="macro")
+        try:
+            overall_auc = roc_auc_score(y_meta, meta_preds)
+        except ValueError:
+            overall_auc = float('nan')
         writer.add_scalar("Meta-Model/Overall_F1", overall_f1, 0)
+        writer.add_scalar("Meta-Model/Overall_Precision", overall_precision, 0)
+        writer.add_scalar("Meta-Model/Overall_Recall", overall_recall, 0)
+        writer.add_scalar("Meta-Model/Overall_ROC_AUC", overall_auc, 0)
     
     # Train final meta-model on the entire dataset
     if model_type.lower() == "xgb":
@@ -770,9 +866,18 @@ def train_stacking_model_cv(oof_xgb, oof_lstm, y, model_type="rf", n_jobs=2, n_s
         joblib.dump(final_meta_model, "results/models/stacking_meta_model_final_xgb.pkl")
         
         if writer:
-            preds = final_meta_model.predict(X_meta)
-            overall_f1_final = f1_score(y_meta, preds, average="macro")
+            try:
+                preds = final_meta_model.predict(X_meta)
+                overall_f1_final = f1_score(y_meta, preds, average="macro")
+                overall_precision_final = precision_score(y_meta, preds, average="macro")
+                overall_recall_final = recall_score(y_meta, preds, average="macro")
+                overall_auc_final = roc_auc_score(y_meta, final_meta_model.predict_proba(X_meta)[:,1])
+            except ValueError:
+                overall_auc_final = float('nan')
             writer.add_scalar("Meta-Model/Final_XGB_F1", overall_f1_final, 0)
+            writer.add_scalar("Meta-Model/Final_XGB_Precision", overall_precision_final, 0)
+            writer.add_scalar("Meta-Model/Final_XGB_Recall", overall_recall_final, 0)
+            writer.add_scalar("Meta-Model/Final_XGB_ROC_AUC", overall_auc_final, 0)
         
     elif model_type.lower() == "lr":
         final_meta_model = LogisticRegression(max_iter=1000, class_weight='balanced', n_jobs=n_jobs)
@@ -780,9 +885,18 @@ def train_stacking_model_cv(oof_xgb, oof_lstm, y, model_type="rf", n_jobs=2, n_s
         joblib.dump(final_meta_model, "results/models/stacking_meta_model_final_lr.pkl")
         
         if writer:
-            preds = final_meta_model.predict(X_meta)
-            overall_f1_final = f1_score(y_meta, preds, average="macro")
+            try:
+                preds = final_meta_model.predict(X_meta)
+                overall_f1_final = f1_score(y_meta, preds, average="macro")
+                overall_precision_final = precision_score(y_meta, preds, average="macro")
+                overall_recall_final = recall_score(y_meta, preds, average="macro")
+                overall_auc_final = roc_auc_score(y_meta, final_meta_model.predict_proba(X_meta)[:,1])
+            except ValueError:
+                overall_auc_final = float('nan')
             writer.add_scalar("Meta-Model/Final_LR_F1", overall_f1_final, 0)
+            writer.add_scalar("Meta-Model/Final_LR_Precision", overall_precision_final, 0)
+            writer.add_scalar("Meta-Model/Final_LR_Recall", overall_recall_final, 0)
+            writer.add_scalar("Meta-Model/Final_LR_ROC_AUC", overall_auc_final, 0)
         
     elif model_type.lower() == "rf":
         final_meta_model = RandomForestClassifier(n_estimators=200, class_weight='balanced', n_jobs=n_jobs)
@@ -790,9 +904,18 @@ def train_stacking_model_cv(oof_xgb, oof_lstm, y, model_type="rf", n_jobs=2, n_s
         joblib.dump(final_meta_model, "results/models/stacking_meta_model_final_rf.pkl")
         
         if writer:
-            preds = final_meta_model.predict(X_meta)
-            overall_f1_final = f1_score(y_meta, preds, average="macro")
+            try:
+                preds = final_meta_model.predict(X_meta)
+                overall_f1_final = f1_score(y_meta, preds, average="macro")
+                overall_precision_final = precision_score(y_meta, preds, average="macro")
+                overall_recall_final = recall_score(y_meta, preds, average="macro")
+                overall_auc_final = roc_auc_score(y_meta, final_meta_model.predict_proba(X_meta)[:,1])
+            except ValueError:
+                overall_auc_final = float('nan')
             writer.add_scalar("Meta-Model/Final_RF_F1", overall_f1_final, 0)
+            writer.add_scalar("Meta-Model/Final_RF_Precision", overall_precision_final, 0)
+            writer.add_scalar("Meta-Model/Final_RF_Recall", overall_recall_final, 0)
+            writer.add_scalar("Meta-Model/Final_RF_ROC_AUC", overall_auc_final, 0)
     
     return final_meta_model
 
@@ -800,15 +923,15 @@ def train_stacking_model_cv(oof_xgb, oof_lstm, y, model_type="rf", n_jobs=2, n_s
 # Additional Metric Printing
 ######################################################################
 
-def evaluate_and_print_metrics(y_true, y_pred, prefix="Model"):
+def evaluate_and_print_metrics(y_true, y_pred, prefix="Model", writer=None):
     """
     Computes and prints confusion matrix, recall, precision, F1, and ROC AUC for the given predictions.
-    Also prints top-level info about ROC curve and precision-recall curve thresholds.
+    Also logs these metrics to TensorBoard.
     """
     # 1. Metrics
     cm = confusion_matrix(y_true, y_pred)
-    rec = recall_score(y_true, y_pred, zero_division=0)
-    prec = precision_score(y_true, y_pred, zero_division=0)
+    rec = recall_score(y_true, y_pred, zero_division=0, average="macro")
+    prec = precision_score(y_true, y_pred, zero_division=0, average="macro")
     f1 = f1_score(y_true, y_pred, average="macro")
 
     # If classes are [0,1] and both present, compute ROC AUC
@@ -820,6 +943,13 @@ def evaluate_and_print_metrics(y_true, y_pred, prefix="Model"):
     logger.info(f"[{prefix}] Confusion Matrix:\n{cm}")
     logger.info(f"[{prefix}] Recall={rec:.4f}  Precision={prec:.4f}  F1={f1:.4f}  AUC={auc:.4f}")
 
+    # ===== Log metrics to TensorBoard =====
+    if writer:
+        writer.add_scalar(f"{prefix}/Recall", rec, 0)
+        writer.add_scalar(f"{prefix}/Precision", prec, 0)
+        writer.add_scalar(f"{prefix}/F1_Score", f1, 0)
+        writer.add_scalar(f"{prefix}/ROC_AUC", auc, 0)
+
     # 2. ROC Curve (truncated display)
     fpr, tpr, roc_thresh = roc_curve(y_true, y_pred)
     logger.info(
@@ -827,12 +957,20 @@ def evaluate_and_print_metrics(y_true, y_pred, prefix="Model"):
         f"   FPR={fpr[:5]}, TPR={tpr[:5]}, TH={roc_thresh[:5]} (truncated)"
     )
     
+    # ===== Optional: Log ROC Curve to TensorBoard =====
+    if writer and len(fpr) > 0:
+        writer.add_roc_curve(f"{prefix}/ROC_Curve", y_true, y_pred, global_step=0)
+    
     # 3. Precision-Recall Curve (truncated display)
     pr_prec, pr_rec, pr_thresh = precision_recall_curve(y_true, y_pred)
     logger.info(
         f"[{prefix}] Precision-Recall points (showing first 5):\n"
         f"   Precision={pr_prec[:5]}, Recall={pr_rec[:5]}, TH={pr_thresh[:5]} (truncated)"
     )
+    
+    # ===== Optional: Log Precision-Recall Curve to TensorBoard =====
+    if writer and len(pr_prec) > 0:
+        writer.add_pr_curve(f"{prefix}/PR_Curve", y_true, y_pred, global_step=0)
 
 ######################################################################
 # Run the Main Function
@@ -849,9 +987,18 @@ def main():
             mp.set_start_method('spawn', force=True)
         except RuntimeError:
             pass 
+        
+    # Start overall execution time logging
+    overall_start_time = time.time()
 
     # Create necessary directories
     create_directories()
+    
+    # ===== Load Configuration File =====
+    config_path = "config.yml"  # Path to your config file
+    with open(config_path, "r") as file:
+        config = yaml.safe_load(file)  # Load configuration
+    logger.info("Configuration loaded successfully.")
 
     # ===== Initialize TensorBoard SummaryWriter =====
     writer = SummaryWriter(log_dir="results/logs/tensorboard")
@@ -862,17 +1009,23 @@ def main():
     profiler.enable()
 
     logger.info("Loading train & val data")
-    log_memory_usage("After Loading Data")
+    
+    # Log memory usage after loading data
+    log_memory_usage(writer, "After Loading Data")
     
     train_csv = "/Users/mchildress/Code/my_crypto_prediction/data/intermediate/train_fe.csv"
     val_csv   = "/Users/mchildress/Code/my_crypto_prediction/data/intermediate/val_fe.csv"
+
+    # Read number of trials from config
+    num_trials = config.get("num_trials", 100)  # Default to 100 trials if not specified
 
     # Load data with specified dtypes
     dtype_mapping = {'target': 'int32'}
     train_df = pd.read_csv(train_csv, dtype=dtype_mapping)
     val_df = pd.read_csv(val_csv, dtype=dtype_mapping)
 
-    log_memory_usage("After Loading CSVs")
+    # Log memory usage after loading CSVs
+    log_memory_usage(writer, "After Loading CSVs")
 
     # Clean & check
     train_df = clean_dataframe(train_df)
@@ -880,7 +1033,8 @@ def main():
     check_infinite_values(train_df, "train_df")
     check_infinite_values(val_df, "val_df")
 
-    log_memory_usage("After Cleaning Data")
+    # Log memory usage after cleaning data
+    log_memory_usage(writer, "After Cleaning Data")
 
     # Feature Selection
     train_features = [c for c in train_df.columns if c not in ("timestamp", "target")]
@@ -904,7 +1058,7 @@ def main():
 
     # Train XGBoost with Optuna
     logger.info("Training XGBoost with Optuna...")
-    oof_xgb = generate_oof_predictions_xgb(train_df, folds, selected_features, label_col="target", writer=writer)
+    oof_xgb, oof_xgb_logloss = generate_oof_predictions_xgb(train_df, folds, selected_features, label_col="target", writer=writer)
     logger.info("XGBoost OOF predictions completed.")
 
     # Train LSTM with Optuna
@@ -912,7 +1066,8 @@ def main():
     oof_lstm = generate_oof_predictions_lstm(train_df, folds, selected_features, window_size=5, label_col="target", writer=writer)
     logger.info("LSTM OOF predictions completed.")
 
-    log_memory_usage("After Generating OOF Predictions")
+    # Log memory usage after generating OOF predictions
+    log_memory_usage(writer, "After Generating OOF Predictions")
 
     # ===== Train Stacking Meta-learner =====
     logger.info("===== Training Stacking Meta-learner =====")
@@ -923,12 +1078,13 @@ def main():
         y=y_combined,
         model_type="rf",
         n_jobs=2,
-        n_splits=2,
+        n_splits=5,
         writer=writer
     )
     logger.info("Stacking meta-learner training completed.")
 
-    log_memory_usage("After Training Stacking Meta-learner")
+    # Log memory usage after training stacking meta-learner
+    log_memory_usage(writer, "After Training Stacking Meta-learner")
 
     # ===== Feature Importance Plot =====
     plot_meta_feature_importance(meta_model, feature_names=["XGBoost", "LSTM"])
@@ -947,6 +1103,10 @@ def main():
     stats = pstats.Stats(profiler).sort_stats(pstats.SortKey.CUMULATIVE)
     stats.dump_stats(profile_path)
     logger.info(f"Profiling stats saved to {profile_path}")
+
+    # Log overall execution time
+    overall_execution_time = time.time() - overall_start_time
+    logger.info(f"Total Execution Time: {overall_execution_time:.2f}s")
 
 ######################################################################
 # Run the Main Function
